@@ -1,0 +1,200 @@
+[
+  {
+    "frame_id": 1,
+    "timestamp": "2026-06-13 00:00:00",
+    "location": "Main Gate",
+    "description": "Blue Ford F150 truck slowly entering the main gate",
+    "objects": [
+      "blue Ford F150",
+      "main gate",
+      "truck"
+    ],
+    "telemetry": {
+      "timestamp": "2026-06-13 00:00:00",
+      "location": "Main Gate",
+      "altitude": 50,
+      "latitude": 40.7128,
+      "longitude": -74.006,
+      "battery_level": 100
+    },
+    "activity_type": "vehicle"
+  },
+  {
+    "frame_id": 2,
+    "timestamp": "2026-06-13 00:01:00",
+    "location": "Garage",
+    "description": "Blue Ford F150 parked at garage entrance",
+    "objects": [
+      "blue Ford F150",
+      "garage",
+      "truck"
+    ],
+    "telemetry": {
+      "timestamp": "2026-06-13 00:01:00",
+      "location": "Garage",
+      "altitude": 45,
+      "latitude": 40.7135,
+      "longitude": -74.0065,
+      "battery_level": 100
+    },
+    "activity_type": "vehicle"
+  },
+  {
+    "frame_id": 3,
+    "timestamp": "2026-06-13 12:00:00",
+    "location": "Garage",
+    "description": "Blue Ford F150 still parked at garage, delivery person loading items",
+    "objects": [
+      "blue Ford F150",
+      "garage",
+      "person",
+      "truck"
+    ],
+    "telemetry": {
+      "timestamp": "2026-06-13 12:00:00",
+      "location": "Garage",
+      "altitude": 45,
+      "latitude": 40.7135,
+      "longitude": -74.0065,
+      "battery_level": 93
+    },
+    "activity_type": "vehicle+person"
+  },
+  {
+    "frame_id": 4,
+    "timestamp": "2026-06-13 23:45:00",
+    "location": "Main Gate",
+    "description": "Blue Ford F150 re-entering property for second time today via main gate",
+    "objects": [
+      "blue Ford F150",
+      "main gate",
+      "truck"
+    ],
+    "telemetry": {
+      "timestamp": "2026-06-13 23:45:00",
+      "location": "Main Gate",
+      "altitude": 50,
+      "latitude": 40.7128,
+      "longitude": -74.006,
+      "battery_level": 86
+    },
+    "activity_type": "vehicle"
+  },
+  {
+    "frame_id": 5,
+    "timestamp": "2026-06-14 00:01:00",
+    "location": "Main Gate",
+    "description": "Unknown person loitering near main gate entrance at midnight, no vehicle present",
+    "objects": [
+      "unknown person",
+      "main gate",
+      "suspicious activity"
+    ],
+    "telemetry": {
+      "timestamp": "2026-06-14 00:01:00",
+      "location": "Main Gate",
+      "altitude": 50,
+      "latitude": 40.7128,
+      "longitude": -74.006,
+      "battery_level": 86
+    },
+    "activity_type": "person"
+  },
+  {
+    "frame_id": 6,
+    "timestamp": "2026-06-14 00:15:00",
+    "location": "Perimeter Fence",
+    "description": "Person moving along perimeter fence line, appears to be surveying property",
+    "objects": [
+      "unknown person",
+      "fence",
+      "perimeter"
+    ],
+    "telemetry": {
+      "timestamp": "2026-06-14 00:15:00",
+      "location": "Perimeter Fence",
+      "altitude": 55,
+      "latitude": 40.713,
+      "longitude": -74.007,
+      "battery_level": 86
+    },
+    "activity_type": "person"
+  },
+  {
+    "frame_id": 7,
+    "timestamp": "2026-06-14 00:30:00",
+    "location": "Main Gate",
+    "description": "Blue Ford F150 truck exiting property",
+    "objects": [
+      "blue Ford F150",
+      "main gate",
+      "truck"
+    ],
+    "telemetry": {
+      "timestamp": "2026-06-14 00:30:00",
+      "location": "Main Gate",
+      "altitude": 50,
+      "latitude": 40.7128,
+      "longitude": -74.006,
+      "battery_level": 86
+    },
+    "activity_type": "vehicle"
+  },
+  {
+    "frame_id": 8,
+    "timestamp": "2026-06-14 12:00:00",
+    "location": "Parking Lot",
+    "description": "Empty parking lot, morning clearing",
+    "objects": [
+      "parking lot"
+    ],
+    "telemetry": {
+      "timestamp": "2026-06-14 12:00:00",
+      "location": "Parking Lot",
+      "altitude": 50,
+      "latitude": 40.714,
+      "longitude": -74.0055,
+      "battery_level": 79
+    },
+    "activity_type": "empty"
+  },
+  {
+    "frame_id": 9,
+    "timestamp": "2026-06-14 18:00:00",
+    "location": "Main Gate",
+    "description": "Silver sedan entering property at morning shift start",
+    "objects": [
+      "silver sedan",
+      "main gate"
+    ],
+    "telemetry": {
+      "timestamp": "2026-06-14 18:00:00",
+      "location": "Main Gate",
+      "altitude": 50,
+      "latitude": 40.7128,
+      "longitude": -74.006,
+      "battery_level": 75
+    },
+    "activity_type": "vehicle"
+  },
+  {
+    "frame_id": 10,
+    "timestamp": "2026-06-15 00:00:00",
+    "location": "Garage",
+    "description": "Silver sedan parked at garage, employee entering building",
+    "objects": [
+      "silver sedan",
+      "garage",
+      "person"
+    ],
+    "telemetry": {
+      "timestamp": "2026-06-15 00:00:00",
+      "location": "Garage",
+      "altitude": 45,
+      "latitude": 40.7135,
+      "longitude": -74.0065,
+      "battery_level": 72
+    },
+    "activity_type": "vehicle+person"
+  }
+]
