@@ -60,3 +60,4 @@ data/embeddings/
 reports/*.pdf
 reports/*.docx
 data/frames.db
+*.mpg
