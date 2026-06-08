@@ -34,6 +34,27 @@ class AlertEngine:
         """Add frame to history for pattern detection"""
         self.frame_history[frame['frame_id']] = frame
 
+    def _get_frame_hour(self, timestamp: str) -> int:
+        """Extract hour from a timestamp string with graceful fallback."""
+        if not timestamp:
+            return 0
+
+        normalized_timestamp = timestamp.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized_timestamp).hour
+        except (ValueError, TypeError):
+            pass
+
+        for separator in (" ", "T"):
+            if separator in timestamp:
+                timestamp = timestamp.split(separator, 1)[1]
+                break
+
+        try:
+            return int(timestamp.split(":", 1)[0])
+        except (ValueError, IndexError):
+            return 0
+
     def analyze_frame(self, frame: Dict[str, Any], previous_frames: List[Dict[str, Any]] = None) -> List[Alert]:
         """
         Analyze a frame and generate alerts if needed.
@@ -72,7 +93,7 @@ class AlertEngine:
         alerts = []
         timestamp = frame['timestamp']
         location = frame['location']
-        hour = int(timestamp.split()[1].split(':')[0])
+        hour = self._get_frame_hour(timestamp)
         activity_type = frame.get('activity_type', 'unknown')
         objects = frame.get('objects', [])
         

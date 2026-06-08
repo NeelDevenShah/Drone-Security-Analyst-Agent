@@ -1,4 +1,8 @@
 """Live Video Stream Processor: Real-time drone video analysis."""
+import os
+
+os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "error")
+
 import cv2
 import threading
 import queue
@@ -43,7 +47,13 @@ class VideoStreamProcessor:
     def _open_stream(self):
         """Open video stream from source"""
         try:
-            self.cap = cv2.VideoCapture(self.source)
+            self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
+
+            if hasattr(cv2, "setLogLevel"):
+                try:
+                    cv2.setLogLevel(3)
+                except Exception:
+                    pass
             
             if not self.cap.isOpened():
                 raise RuntimeError(f"Failed to open stream: {self.source}")
