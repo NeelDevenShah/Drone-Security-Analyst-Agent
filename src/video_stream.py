@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from datetime import datetime
 import time
 
+try:
+    from .config import STREAM_CONFIG
+except ImportError:
+    from config import STREAM_CONFIG
+
 
 @dataclass
 class StreamFrame:
@@ -26,12 +31,19 @@ class StreamFrame:
 class VideoStreamProcessor:
     """Processes live video streams from files or RTSP sources."""
 
-    def __init__(self, source: str, callback: Optional[Callable] = None, fps_limit: int = 30):
+    def __init__(
+        self,
+        source: str,
+        callback: Optional[Callable] = None,
+        fps_limit: int = STREAM_CONFIG.fps_limit,
+        loop: bool = STREAM_CONFIG.loop
+    ):
         """Initialize video stream processor"""
         self.source = source
         self.callback = callback
         self.fps_limit = fps_limit
-        self.frame_queue = queue.Queue(maxsize=10)
+        self.loop = loop
+        self.frame_queue = queue.Queue(maxsize=STREAM_CONFIG.queue_size)
         self.is_running = False
         self.frame_count = 0
         self.cap = None
@@ -86,7 +98,7 @@ class VideoStreamProcessor:
         """Stop processing video stream"""
         self.is_running = False
         if self.thread:
-            self.thread.join(timeout=5)
+            self.thread.join(timeout=STREAM_CONFIG.stop_join_timeout_seconds)
         if self.cap:
             self.cap.release()
         print("✓ Video stream processing stopped")
@@ -99,11 +111,12 @@ class VideoStreamProcessor:
             ret, frame = self.cap.read()
             
             if not ret:
-                if self.total_frames > 0:
+                if self.loop and self.total_frames > 0:
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     continue
-                else:
-                    break
+
+                self.is_running = False
+                break
             
             self.frame_count += 1
             
@@ -120,14 +133,22 @@ class VideoStreamProcessor:
                 }
             )
             
-            try:
-                self.frame_queue.put(stream_frame, block=False)
-            except queue.Full:
+            if self.loop:
                 try:
-                    self.frame_queue.get_nowait()
-                    self.frame_queue.put(stream_frame)
-                except:
-                    pass
+                    self.frame_queue.put(stream_frame, block=False)
+                except queue.Full:
+                    try:
+                        self.frame_queue.get_nowait()
+                        self.frame_queue.put(stream_frame)
+                    except queue.Empty:
+                        pass
+            else:
+                while self.is_running:
+                    try:
+                        self.frame_queue.put(stream_frame, timeout=0.5)
+                        break
+                    except queue.Full:
+                        continue
             
             if self.callback:
                 try:
@@ -157,11 +178,11 @@ class VideoStreamProcessor:
 
     def frame_generator(self):
         """Generator that yields frames as they're available"""
-        while self.is_running:
-            frame = self.get_frame(timeout=5.0)
+        while self.is_running or not self.frame_queue.empty():
+            frame = self.get_frame(timeout=STREAM_CONFIG.frame_timeout_seconds)
             if frame:
                 yield frame
-            else:
+            elif not self.is_running:
                 break
 
 

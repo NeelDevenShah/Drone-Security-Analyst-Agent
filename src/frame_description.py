@@ -10,6 +10,11 @@ from datetime import datetime
 import threading
 import queue
 
+try:
+    from .config import VLM_CONFIG
+except ImportError:
+    from config import VLM_CONFIG
+
 
 @dataclass
 class FrameDescription:
@@ -29,7 +34,7 @@ class FrameDescriptionGenerator:
     Uses VLM for semantic analysis or fallback CV methods.
     """
 
-    def __init__(self, vlm_processor=None, use_cv_fallback: bool = True):
+    def __init__(self, vlm_processor=None, use_cv_fallback: bool = VLM_CONFIG.use_cv_fallback):
         """
         Initialize frame description generator
         
@@ -75,7 +80,7 @@ class FrameDescriptionGenerator:
             description=description,
             objects=objects,
             activity_type=activity,
-            confidence=0.85 if self.vlm_processor else 0.65,
+            confidence=VLM_CONFIG.vlm_confidence if self.vlm_processor else VLM_CONFIG.cv_fallback_confidence,
             processing_time_ms=processing_time
         )
 

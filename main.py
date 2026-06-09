@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from data_simulator import DataSimulator
 from agent import SecurityAnalystAgent
+from config import SIMULATOR_CONFIG
 
 
 def main():
@@ -27,7 +28,7 @@ def main():
     print("\n[1/4] Generating simulated frame data...")
     simulator = DataSimulator()
     frames = simulator.generate_realistic_scenario()
-    simulator.save_to_file("/home/neel/Desktop/flytbaseAI/data/simulated_frames.json")
+    simulator.save_to_file(SIMULATOR_CONFIG.output_path)
     print(f"✓ Generated {len(frames)} frames")
     
     # Step 2: Initialize agent
@@ -93,7 +94,7 @@ def main():
     
     # Display database location
     print(f"Database Location: {indexer.db_path}")
-    print(f"Simulated Frames: /home/neel/Desktop/flytbaseAI/data/simulated_frames.json")
+    print(f"Simulated Frames: {SIMULATOR_CONFIG.output_path}")
     
     # Cleanup
     agent.close()

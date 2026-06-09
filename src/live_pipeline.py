@@ -17,6 +17,7 @@ from frame_description import RealTimeFrameAnalyzer, FrameDescriptionGenerator
 from agent import SecurityAnalystAgent
 from frame_indexer import FrameIndexer
 from dataclasses import asdict
+from config import ALERT_RULE_CONFIG, PIPELINE_CONFIG, STREAM_CONFIG
 
 
 class LiveSecurityAnalysisPipeline:
@@ -30,10 +31,11 @@ class LiveSecurityAnalysisPipeline:
 
     def __init__(
         self,
-        video_source: str,
-        db_path: str = "/home/neel/Desktop/flytbaseAI/data/frames.db",
+        video_source: str = PIPELINE_CONFIG.video_source,
+        db_path: str = PIPELINE_CONFIG.db_path,
         vlm_processor=None,
-        fps_limit: int = 10
+        fps_limit: int = STREAM_CONFIG.fps_limit,
+        loop: bool = STREAM_CONFIG.loop
     ):
         """
         Initialize live analysis pipeline
@@ -46,10 +48,13 @@ class LiveSecurityAnalysisPipeline:
         """
         self.video_source = video_source
         self.fps_limit = fps_limit
+        self.loop = loop
         self.is_running = False
+        self.completed = False
+        self.db_path = db_path
         
         # Initialize components
-        self.stream_processor = LocalVideoProcessor(video_source, fps_limit=fps_limit)
+        self.stream_processor = LocalVideoProcessor(video_source, fps_limit=fps_limit, loop=loop)
         self.frame_generator = FrameDescriptionGenerator(vlm_processor=vlm_processor)
         self.agent = SecurityAnalystAgent(db_path=db_path)
         self.indexer = FrameIndexer(db_path=db_path)
@@ -77,6 +82,7 @@ class LiveSecurityAnalysisPipeline:
         print("=" * 70)
         print(f"Video Source: {self.video_source}")
         print(f"FPS Limit: {self.fps_limit}")
+        print(f"Loop Video: {'yes' if self.loop else 'no'}")
         print(f"Database: {self.indexer.db_path}")
         print("=" * 70)
 
@@ -84,7 +90,7 @@ class LiveSecurityAnalysisPipeline:
         """Stop the pipeline"""
         self.is_running = False
         if self.process_thread:
-            self.process_thread.join(timeout=10)
+            self.process_thread.join(timeout=PIPELINE_CONFIG.stop_join_timeout_seconds)
         self.stream_processor.stop()
         self.agent.close()
         self.indexer.close()
@@ -115,7 +121,7 @@ class LiveSecurityAnalysisPipeline:
                 frame_data = {
                     "frame_id": frame_desc.frame_id,
                     "timestamp": frame_desc.timestamp,
-                    "location": "Drone-Aerial",  # Default location
+                    "location": PIPELINE_CONFIG.default_location,
                     "description": frame_desc.description,
                     "objects": frame_desc.objects,
                     "activity_type": frame_desc.activity_type,
@@ -150,13 +156,13 @@ class LiveSecurityAnalysisPipeline:
                 
                 # 6. Update context
                 previous_frames.append(frame_data)
-                if len(previous_frames) > 50:  # Keep last 50 frames for context
+                if len(previous_frames) > PIPELINE_CONFIG.context_frame_limit:
                     previous_frames.pop(0)
                 
                 # 7. Print progress
                 self.frames_processed += 1
                 
-                if self.frames_processed % 10 == 0:
+                if self.frames_processed % PIPELINE_CONFIG.progress_interval_frames == 0:
                     self._print_progress_update()
                 
                 # High-risk alerts printed immediately
@@ -168,6 +174,10 @@ class LiveSecurityAnalysisPipeline:
                 print(f"✗ Error processing frame: {e}")
                 import traceback
                 traceback.print_exc()
+
+        if self.is_running and not self.loop and not self.stream_processor.is_running:
+            self.completed = True
+            self.is_running = False
 
     def _print_progress_update(self):
         """Print progress update"""
@@ -183,14 +193,7 @@ class LiveSecurityAnalysisPipeline:
 
     def _print_alert(self, alert):
         """Print alert with formatting"""
-        severity_emoji = {
-            "CRITICAL": "🔴",
-            "HIGH": "🟠",
-            "MEDIUM": "🟡",
-            "LOW": "🟢"
-        }
-        
-        emoji = severity_emoji.get(alert.severity, "⚪")
+        emoji = ALERT_RULE_CONFIG.severity_icons.get(alert.severity, "⚪")
         print(f"\n{emoji} ALERT [{alert.severity}] Threat:{alert.threat_score}/10")
         print(f"   Time: {alert.timestamp}")
         print(f"   Type: {alert.alert_type}")
@@ -199,6 +202,9 @@ class LiveSecurityAnalysisPipeline:
     def get_summary(self) -> Dict[str, Any]:
         """Get summary of analysis"""
         return {
+            "video_source": self.video_source,
+            "loop": self.loop,
+            "completed": self.completed,
             "frames_processed": self.frames_processed,
             "total_alerts": len(self.alerts_generated),
             "high_alerts": len([a for a in self.alerts_generated if a.severity in ["HIGH", "CRITICAL"]]),
@@ -215,6 +221,7 @@ class LiveSecurityAnalysisPipeline:
         print("📊 FINAL ANALYSIS REPORT")
         print("=" * 70)
         print(f"Frames Processed: {summary['frames_processed']}")
+        print(f"Status: {'completed video' if self.completed else 'stopped before completion'}")
         print(f"Processing Rate: ~{self.fps_limit} FPS")
         print(f"Avg Frame Processing Time: {summary['avg_processing_time_ms']:.2f}ms")
         print(f"\nAlerts Generated: {summary['total_alerts']}")
@@ -232,7 +239,7 @@ class LiveSecurityAnalysisPipeline:
         
         print("\n" + "=" * 70)
 
-    def export_results(self, output_file: str = "live_analysis_results.json"):
+    def export_results(self, output_file: str = PIPELINE_CONFIG.export_path):
         """Export results to JSON"""
         import json
         
@@ -266,25 +273,33 @@ def main():
     parser.add_argument(
         "--video",
         type=str,
-        default="/home/neel/Desktop/flytbaseAI/sample_data/09172008flight1tape1_5.mpg",
-        help="Path to video file or RTSP URL"
+        default=PIPELINE_CONFIG.video_source,
+        help=f"Path to video file or RTSP URL (default: {PIPELINE_CONFIG.video_source})"
     )
     parser.add_argument(
         "--fps",
         type=int,
-        default=10,
-        help="Frame rate limit (default: 10)"
+        default=STREAM_CONFIG.fps_limit,
+        help=f"Frame rate limit (default: {STREAM_CONFIG.fps_limit})"
     )
     parser.add_argument(
         "--db",
         type=str,
-        default="/home/neel/Desktop/flytbaseAI/data/frames_live.db",
-        help="Database path (default: frames_live.db)"
+        default=PIPELINE_CONFIG.db_path,
+        help=f"Database path (default: {PIPELINE_CONFIG.db_path})"
     )
     parser.add_argument(
         "--export",
         type=str,
-        help="Export results to JSON file"
+        nargs="?",
+        const=PIPELINE_CONFIG.export_path,
+        help=f"Export results to JSON file (default when flag has no value: {PIPELINE_CONFIG.export_path})"
+    )
+    parser.add_argument(
+        "--loop",
+        action=argparse.BooleanOptionalAction,
+        default=STREAM_CONFIG.loop,
+        help=f"Loop the input video continuously until interrupted (default: {STREAM_CONFIG.loop})"
     )
     
     args = parser.parse_args()
@@ -293,7 +308,8 @@ def main():
     pipeline = LiveSecurityAnalysisPipeline(
         video_source=args.video,
         db_path=args.db,
-        fps_limit=args.fps
+        fps_limit=args.fps,
+        loop=args.loop
     )
     
     try:

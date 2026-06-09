@@ -5,6 +5,11 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+try:
+    from .config import ALERT_RULE_CONFIG
+except ImportError:
+    from config import ALERT_RULE_CONFIG
+
 
 @dataclass
 class Alert:
@@ -26,7 +31,8 @@ class AlertEngine:
     LLM Layer: Contextual analysis using frame history
     """
 
-    def __init__(self):
+    def __init__(self, config=ALERT_RULE_CONFIG):
+        self.config = config
         self.alerts: List[Alert] = []
         self.frame_history: Dict[int, Dict[str, Any]] = {}
 
@@ -98,13 +104,13 @@ class AlertEngine:
         objects = frame.get('objects', [])
         
         # RULE 1: Loitering at midnight
-        if hour >= 23 or hour <= 2:  # Midnight to 2 AM
+        if hour in self.config.loitering_hours:
             if activity_type == "person":
                 alert = Alert(
                     frame_id=frame['frame_id'],
                     alert_type="loitering_midnight",
-                    severity="HIGH",
-                    threat_score=8,
+                    severity=self.config.loitering_severity,
+                    threat_score=self.config.loitering_threat_score,
                     message=f"Person loitering at {location} at {timestamp} (off-hours activity)",
                     timestamp=timestamp,
                     location=location
@@ -112,13 +118,13 @@ class AlertEngine:
                 alerts.append(alert)
         
         # RULE 2: Suspicious perimeter activity
-        if "perimeter" in location.lower() or "fence" in location.lower():
+        if any(keyword in location.lower() for keyword in self.config.suspicious_locations):
             if activity_type == "person":
                 alert = Alert(
                     frame_id=frame['frame_id'],
                     alert_type="perimeter_breach",
-                    severity="MEDIUM",
-                    threat_score=6,
+                    severity=self.config.perimeter_severity,
+                    threat_score=self.config.perimeter_threat_score,
                     message=f"Person detected at {location} (perimeter security concern)",
                     timestamp=timestamp,
                     location=location
@@ -126,13 +132,13 @@ class AlertEngine:
                 alerts.append(alert)
         
         # RULE 3: Unusual nighttime vehicle activity (vehicle at odd hour)
-        if hour >= 23 or hour <= 6:  # Night hours
+        if hour in self.config.night_vehicle_hours:
             if activity_type in ["vehicle", "vehicle+person"]:
                 alert = Alert(
                     frame_id=frame['frame_id'],
                     alert_type="night_vehicle",
-                    severity="LOW",
-                    threat_score=3,
+                    severity=self.config.night_vehicle_severity,
+                    threat_score=self.config.night_vehicle_threat_score,
                     message=f"Vehicle activity at {location} during off-hours ({timestamp})",
                     timestamp=timestamp,
                     location=location
@@ -158,8 +164,8 @@ class AlertEngine:
                 alert = Alert(
                     frame_id=frame['frame_id'],
                     alert_type="repeat_visit",
-                    severity="MEDIUM",
-                    threat_score=5,
+                    severity=self.config.repeat_visit_severity,
+                    threat_score=self.config.repeat_visit_threat_score,
                     message=f"Repeat visit: {vehicle_info['vehicle']} entered at {vehicle_info['first_time']} and {timestamp}",
                     timestamp=timestamp,
                     location=location
@@ -234,18 +240,17 @@ class AlertEngine:
         # Find frames with same object at same location
         same_location_frames = [f for f in previous_frames if f['location'] == location]
         
-        if len(same_location_frames) >= 3:  # 3+ frames at same location
+        if len(same_location_frames) >= self.config.dwell_time_min_frames:
             time_span = self._calculate_time_span(same_location_frames)
             
-            # If object stayed >4 hours, flag as long dwell
-            if time_span > 240:  # 4 hours in minutes
+            if time_span > self.config.dwell_time_min_minutes:
                 # Extract object name
                 object_name = ", ".join(objects) if objects else "object"
                 alert = Alert(
                     frame_id=current_frame['frame_id'],
                     alert_type="long_dwell",
-                    severity="LOW",
-                    threat_score=4,
+                    severity=self.config.dwell_time_severity,
+                    threat_score=self.config.dwell_time_threat_score,
                     message=f"{object_name} has been stationary at {location} for {time_span//60}+ hours",
                     timestamp=timestamp,
                     location=location

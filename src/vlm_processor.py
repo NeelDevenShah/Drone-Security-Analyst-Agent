@@ -6,6 +6,11 @@ import json
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 
+try:
+    from .config import VLM_CONFIG
+except ImportError:
+    from config import VLM_CONFIG
+
 
 @dataclass
 class VLMAnalysis:
@@ -28,7 +33,7 @@ class VLMProcessor:
     Can be extended to support GPT-4o, LLaVA, Qwen-VL, etc.
     """
 
-    def __init__(self, model_name: str = "blip2"):
+    def __init__(self, model_name: str = VLM_CONFIG.model_name):
         """
         Initialize VLM processor
         
@@ -55,15 +60,23 @@ class VLMProcessor:
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 print(f"Using device: {device}")
                 
-                self.processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
+                self.processor = Blip2Processor.from_pretrained(VLM_CONFIG.model_repo)
                 self.model = Blip2ForConditionalGeneration.from_pretrained(
-                    "Salesforce/blip2-opt-2.7b",
+                    VLM_CONFIG.model_repo,
                     torch_dtype=torch.float16 if device == "cuda" else torch.float32,
                     device_map=device
                 )
                 print("✓ BLIP-2 model loaded successfully")
             except ImportError:
                 print("⚠ Transformers not installed. Using mock VLM processor.")
+                self.processor = None
+                self.model = None
+            except Exception as e:
+                if not VLM_CONFIG.fallback_on_load_error:
+                    raise
+
+                print(f"⚠ Failed to load {self.model_name} model: {e}")
+                print("⚠ Using mock VLM processor.")
                 self.processor = None
                 self.model = None
         else:
@@ -101,7 +114,7 @@ class VLMProcessor:
             description=frame_data.get("description"),
             objects=frame_data.get("objects", []),
             activity_type=frame_data.get("activity_type", "unknown"),
-            confidence=0.95,  # High confidence for simulated data
+            confidence=VLM_CONFIG.simulated_confidence,
             vlm_model=f"{self.model_name}_simulated"
         )
 

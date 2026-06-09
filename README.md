@@ -100,6 +100,7 @@ flytbaseAI/
 │   ├── frame_indexer.py             # SQLite + ChromaDB storage
 │   ├── alert_engine.py              # Rule + LLM alerting
 │   ├── agent.py                     # LangChain orchestration
+│   ├── config.py                    # Central runtime configuration
 │   ├── video_stream.py              # Video/RTSP processing
 │   ├── frame_description.py         # Frame analysis
 │   ├── live_pipeline.py             # End-to-end streaming pipeline
@@ -125,6 +126,12 @@ flytbaseAI/
 # Process entire video file
 python src/live_pipeline.py --video path/to/video.mp4 --fps 10 --export results.json
 
+# Use configured defaults from src/config.py
+python src/live_pipeline.py --export
+
+# Loop a file continuously until Ctrl+C
+python src/live_pipeline.py --video path/to/video.mp4 --loop --export loop_results.json
+
 # View results
 python -c "import json; d=json.load(open('results.json')); [print(f'{a[\"severity\"]}: {a[\"message\"]}') for a in d['alerts']]"
 ```
@@ -133,7 +140,7 @@ python -c "import json; d=json.load(open('results.json')); [print(f'{a[\"severit
 
 ```bash
 # Stream from RTSP (e.g., DJI Mavic 3)
-python src/live_pipeline.py --rtsp rtsp://192.168.1.100:554/live --fps 5 --export live_results.json
+python src/live_pipeline.py --video rtsp://192.168.1.100:554/live --fps 5 --loop --export live_results.json
 
 # In another terminal, monitor dashboard
 streamlit run src/dashboard.py
@@ -203,45 +210,86 @@ streamlit run src/dashboard.py
 
 ## 🔧 Configuration
 
-### Alert Rules Customization
-
-Edit `src/alert_engine.py`:
+All common runtime settings live in `src/config.py`. Change defaults there when you want project-wide behavior, or use CLI flags when you only want to override one run.
 
 ```python
-# Adjust threat thresholds
-THREAT_THRESHOLDS = {
-    'CRITICAL': 9,      # Threat score >= 9
-    'HIGH': 7,          # Threat score >= 7
-    'MEDIUM': 4,        # Threat score >= 4
-    'LOW': 1            # Threat score >= 1
-}
+STREAM_CONFIG = StreamConfig(
+    fps_limit=10,
+    loop=False,
+    queue_size=10,
+)
 
-# Customize alert rules
-MIDNIGHT_START = 23    # Alert window start (11 PM)
-MIDNIGHT_END = 6       # Alert window end (6 AM)
+PIPELINE_CONFIG = PipelineConfig(
+    video_source="sample_data/09172008flight1tape1_5.mpg",
+    db_path="data/frames_live.db",
+    export_path="results.json",
+    default_location="Drone-Aerial",
+    context_frame_limit=50,
+    progress_interval_frames=10,
+)
 ```
 
-### VLM Model Selection
+### CLI Overrides
 
-Edit `src/vlm_processor.py`:
+`src/config.py` provides defaults. These flags override them for a single command:
 
-```python
-# Available models:
-# - "blip2"       (default, ~7GB)
-# - "llava"       (alternative, ~13GB)
-# - "qwen-vl"     (alternative, ~11GB)
-# - "simulation"  (fast fallback for testing)
+| Setting | Config field | CLI override |
+|---------|--------------|--------------|
+| Video/RTSP source | `PIPELINE_CONFIG.video_source` | `--video path_or_url` |
+| Processing FPS | `STREAM_CONFIG.fps_limit` | `--fps 10` |
+| SQLite database | `PIPELINE_CONFIG.db_path` | `--db data/run.db` |
+| JSON export path | `PIPELINE_CONFIG.export_path` | `--export results.json` |
+| Looping mode | `STREAM_CONFIG.loop` | `--loop` / `--no-loop` |
 
-processor = VLMProcessor(model_name="blip2")
+```bash
+# Configured one-shot run. Stops at EOF.
+python src/live_pipeline.py --export
+
+# Override only this run.
+python src/live_pipeline.py --video file.mp4 --fps 5 --db data/custom.db --export custom.json
+
+# Continuous replay/live-style mode.
+python src/live_pipeline.py --video file.mp4 --loop --export loop_results.json
 ```
 
-### Database Location
+### Alert Rules
 
-Edit `src/frame_indexer.py`:
+Edit `ALERT_RULE_CONFIG` in `src/config.py`:
 
 ```python
-# Change database path
-indexer = FrameIndexer(db_path="/custom/path/to/database.db")
+ALERT_RULE_CONFIG = AlertRuleConfig(
+    loitering_hours=(23, 0, 1, 2),
+    night_vehicle_hours=(23, 0, 1, 2, 3, 4, 5, 6),
+    loitering_severity="HIGH",
+    loitering_threat_score=8,
+    perimeter_severity="MEDIUM",
+    perimeter_threat_score=6,
+    night_vehicle_severity="LOW",
+    night_vehicle_threat_score=3,
+    repeat_visit_severity="MEDIUM",
+    repeat_visit_threat_score=5,
+)
+```
+
+### VLM, Database, and Simulator Defaults
+
+Edit these config blocks in `src/config.py`:
+
+```python
+VLM_CONFIG = VLMConfig(
+    model_name="blip2",
+    model_repo="Salesforce/blip2-opt-2.7b",
+    use_cv_fallback=True,
+    fallback_on_load_error=True,
+)
+
+DATABASE_CONFIG = DatabaseConfig(
+    db_path="data/frames.db",
+)
+
+SIMULATOR_CONFIG = SimulatorConfig(
+    output_path="data/simulated_frames.json",
+)
 ```
 
 ---

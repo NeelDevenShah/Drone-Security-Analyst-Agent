@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from frame_indexer import FrameIndexer
 from alert_engine import AlertEngine, Alert
 from vlm_processor import VLMProcessor
+from config import DATABASE_CONFIG, VLM_CONFIG
 
 
 @dataclass
@@ -38,11 +39,15 @@ class SecurityAnalystAgent:
     Maintains context across frames, can answer questions, and generates reports.
     """
 
-    def __init__(self, db_path: str = "/home/neel/Desktop/flytbaseAI/data/frames.db"):
+    def __init__(
+        self,
+        db_path: str = DATABASE_CONFIG.db_path,
+        vlm_model: str = VLM_CONFIG.model_name
+    ):
         """Initialize the agent with indexer and alert engine"""
         self.indexer = FrameIndexer(db_path)
         self.alert_engine = AlertEngine()
-        self.vlm_processor = VLMProcessor()
+        self.vlm_processor = VLMProcessor(model_name=vlm_model)
         self.context = AgentContext()
         self.tools = self._register_tools()
 

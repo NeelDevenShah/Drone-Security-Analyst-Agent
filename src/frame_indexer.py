@@ -9,6 +9,11 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
 
+try:
+    from .config import DATABASE_CONFIG
+except ImportError:
+    from config import DATABASE_CONFIG
+
 
 class FrameIndexer:
     """
@@ -19,7 +24,7 @@ class FrameIndexer:
     - ChromaDB: Semantic embeddings for similarity search (optional enhancement)
     """
 
-    def __init__(self, db_path: str = "/home/neel/Desktop/flytbaseAI/data/frames.db"):
+    def __init__(self, db_path: str = DATABASE_CONFIG.db_path):
         """Initialize the frame indexing database"""
         self.db_path = db_path
         self.conn = None

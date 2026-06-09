@@ -6,6 +6,11 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any
 from dataclasses import dataclass, asdict
 
+try:
+    from .config import SIMULATOR_CONFIG
+except ImportError:
+    from config import SIMULATOR_CONFIG
+
 
 @dataclass
 class TelemetryData:
@@ -136,19 +141,14 @@ class DataSimulator:
         self.frame_counter += 1
         
         # Calculate timestamp
-        base_time = datetime(2026, 6, 13, 0, 0, 0)
+        base_time = SIMULATOR_CONFIG.base_time
         frame_time = base_time + timedelta(minutes=time_offset)
         timestamp = frame_time.strftime("%Y-%m-%d %H:%M:%S")
         
-        # Map location to GPS coordinates
-        location_coords = {
-            "Main Gate": {"lat": 40.7128, "lon": -74.0060, "altitude": 50},
-            "Garage": {"lat": 40.7135, "lon": -74.0065, "altitude": 45},
-            "Perimeter Fence": {"lat": 40.7130, "lon": -74.0070, "altitude": 55},
-            "Parking Lot": {"lat": 40.7140, "lon": -74.0055, "altitude": 50},
-        }
-        
-        coords = location_coords.get(location, {"lat": 40.7128, "lon": -74.0060, "altitude": 50})
+        coords = SIMULATOR_CONFIG.location_coordinates.get(
+            location,
+            SIMULATOR_CONFIG.default_coordinates
+        )
         
         # Create telemetry
         telemetry = {
@@ -196,4 +196,4 @@ if __name__ == "__main__":
         print(f"  [{frame.timestamp}] {frame.location}: {frame.description}")
     
     # Save to file
-    simulator.save_to_file("/home/neel/Desktop/flytbaseAI/data/simulated_frames.json")
+    simulator.save_to_file(SIMULATOR_CONFIG.output_path)
