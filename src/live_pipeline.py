@@ -17,7 +17,8 @@ from frame_description import RealTimeFrameAnalyzer, FrameDescriptionGenerator
 from agent import SecurityAnalystAgent
 from frame_indexer import FrameIndexer
 from dataclasses import asdict
-from config import ALERT_RULE_CONFIG, PIPELINE_CONFIG, STREAM_CONFIG
+from config import ALERT_RULE_CONFIG, PIPELINE_CONFIG, STREAM_CONFIG, VLM_CONFIG
+from vlm_processor import VLMProcessor
 
 
 class LiveSecurityAnalysisPipeline:
@@ -35,7 +36,8 @@ class LiveSecurityAnalysisPipeline:
         db_path: str = PIPELINE_CONFIG.db_path,
         vlm_processor=None,
         fps_limit: int = STREAM_CONFIG.fps_limit,
-        loop: bool = STREAM_CONFIG.loop
+        loop: bool = STREAM_CONFIG.loop,
+        use_vlm: bool = VLM_CONFIG.enabled
     ):
         """
         Initialize live analysis pipeline
@@ -49,14 +51,23 @@ class LiveSecurityAnalysisPipeline:
         self.video_source = video_source
         self.fps_limit = fps_limit
         self.loop = loop
+        self.use_vlm = use_vlm
         self.is_running = False
         self.completed = False
         self.db_path = db_path
         
         # Initialize components
+        if self.use_vlm and vlm_processor is None:
+            vlm_processor = VLMProcessor(model_name=VLM_CONFIG.model_name)
+
+        self.vlm_processor = vlm_processor
         self.stream_processor = LocalVideoProcessor(video_source, fps_limit=fps_limit, loop=loop)
-        self.frame_generator = FrameDescriptionGenerator(vlm_processor=vlm_processor)
-        self.agent = SecurityAnalystAgent(db_path=db_path)
+        self.frame_generator = FrameDescriptionGenerator(vlm_processor=self.vlm_processor)
+        self.agent = SecurityAnalystAgent(
+            db_path=db_path,
+            vlm_processor=self.vlm_processor,
+            enable_vlm=self.use_vlm
+        )
         self.indexer = FrameIndexer(db_path=db_path)
         
         # Results storage
@@ -83,6 +94,7 @@ class LiveSecurityAnalysisPipeline:
         print(f"Video Source: {self.video_source}")
         print(f"FPS Limit: {self.fps_limit}")
         print(f"Loop Video: {'yes' if self.loop else 'no'}")
+        print(f"VLM Enabled: {'yes' if self.use_vlm else 'no'}")
         print(f"Database: {self.indexer.db_path}")
         print("=" * 70)
 
@@ -205,6 +217,9 @@ class LiveSecurityAnalysisPipeline:
             "video_source": self.video_source,
             "loop": self.loop,
             "completed": self.completed,
+            "vlm_enabled": self.use_vlm,
+            "vlm_available": bool(self.vlm_processor and self.vlm_processor.is_available),
+            "vlm_model": self.vlm_processor.model_name if self.vlm_processor else "cv_fallback",
             "frames_processed": self.frames_processed,
             "total_alerts": len(self.alerts_generated),
             "high_alerts": len([a for a in self.alerts_generated if a.severity in ["HIGH", "CRITICAL"]]),
@@ -301,6 +316,12 @@ def main():
         default=STREAM_CONFIG.loop,
         help=f"Loop the input video continuously until interrupted (default: {STREAM_CONFIG.loop})"
     )
+    parser.add_argument(
+        "--vlm",
+        action=argparse.BooleanOptionalAction,
+        default=VLM_CONFIG.enabled,
+        help=f"Use configured VLM for semantic frame descriptions (default: {VLM_CONFIG.enabled})"
+    )
     
     args = parser.parse_args()
     
@@ -309,7 +330,8 @@ def main():
         video_source=args.video,
         db_path=args.db,
         fps_limit=args.fps,
-        loop=args.loop
+        loop=args.loop,
+        use_vlm=args.vlm
     )
     
     try:

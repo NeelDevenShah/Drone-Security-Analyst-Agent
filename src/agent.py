@@ -42,12 +42,14 @@ class SecurityAnalystAgent:
     def __init__(
         self,
         db_path: str = DATABASE_CONFIG.db_path,
-        vlm_model: str = VLM_CONFIG.model_name
+        vlm_model: str = VLM_CONFIG.model_name,
+        vlm_processor=None,
+        enable_vlm: bool = VLM_CONFIG.enabled
     ):
         """Initialize the agent with indexer and alert engine"""
         self.indexer = FrameIndexer(db_path)
         self.alert_engine = AlertEngine()
-        self.vlm_processor = VLMProcessor(model_name=vlm_model)
+        self.vlm_processor = vlm_processor or (VLMProcessor(model_name=vlm_model) if enable_vlm else None)
         self.context = AgentContext()
         self.tools = self._register_tools()
 
@@ -81,16 +83,16 @@ class SecurityAnalystAgent:
         
         for frame in frames:
             # Analyze frame with VLM
-            vlm_analysis = self.vlm_processor.analyze_frame(frame)
+            vlm_analysis = self.vlm_processor.analyze_frame(frame) if self.vlm_processor else None
             
             # Store frame in indexer
             self.indexer.store_frame(
                 frame_id=frame['frame_id'],
                 timestamp=frame['timestamp'],
                 location=frame['location'],
-                description=vlm_analysis.description,
-                objects=vlm_analysis.objects,
-                activity_type=vlm_analysis.activity_type,
+                description=vlm_analysis.description if vlm_analysis else frame.get('description', ''),
+                objects=vlm_analysis.objects if vlm_analysis else frame.get('objects', []),
+                activity_type=vlm_analysis.activity_type if vlm_analysis else frame.get('activity_type', 'unknown'),
                 threat_score=0,
                 telemetry=frame.get('telemetry')
             )
@@ -142,7 +144,7 @@ class SecurityAnalystAgent:
             Analysis result including alerts
         """
         # VLM analysis
-        vlm_analysis = self.vlm_processor.analyze_frame(frame)
+        vlm_analysis = self.vlm_processor.analyze_frame(frame) if self.vlm_processor else None
         
         # Check alerts
         alerts = self.alert_engine.analyze_frame(frame)
@@ -151,9 +153,9 @@ class SecurityAnalystAgent:
             "frame_id": frame['frame_id'],
             "timestamp": frame['timestamp'],
             "location": frame['location'],
-            "vlm_description": vlm_analysis.description,
-            "objects": vlm_analysis.objects,
-            "activity_type": vlm_analysis.activity_type,
+            "vlm_description": vlm_analysis.description if vlm_analysis else frame.get('description', ''),
+            "objects": vlm_analysis.objects if vlm_analysis else frame.get('objects', []),
+            "activity_type": vlm_analysis.activity_type if vlm_analysis else frame.get('activity_type', 'unknown'),
             "alerts": [
                 {
                     "type": a.alert_type,

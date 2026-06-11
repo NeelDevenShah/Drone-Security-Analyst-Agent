@@ -55,12 +55,60 @@ class SimulatorConfig:
 
 
 @dataclass(frozen=True)
+class DetectionConfig:
+    """Configurable object and activity labels used by the VLM prompt."""
+    object_categories: Tuple[str, ...] = (
+        "vehicle",
+        "person",
+        "building",
+        "gate",
+        "road",
+        "nature",
+    )
+    activity_categories: Tuple[str, ...] = (
+        "vehicle+person",
+        "vehicle",
+        "person",
+        "empty",
+    )
+    fallback_object: str = "scene"
+    fallback_activity: str = "empty"
+    cv_fallback_keywords: Dict[str, Tuple[str, ...]] = field(default_factory=lambda: {
+        "vehicle": (
+            "truck", "trucks", "car", "cars", "sedan", "sedans",
+            "vehicle", "vehicles", "automobile", "automobiles", "van", "vans",
+            "bus", "buses", "pickup", "pickups"
+        ),
+        "person": (
+            "person", "people", "human", "humans", "man", "men",
+            "woman", "women", "pedestrian", "pedestrians", "individual"
+        ),
+        "building": ("building", "buildings", "structure", "house", "garage", "warehouse"),
+        "gate": ("gate", "fence", "barrier", "entrance", "door"),
+        "road": ("road", "street", "path", "pavement", "asphalt", "driveway"),
+        "nature": ("grass", "vegetation", "tree", "trees", "outdoor", "field"),
+    })
+    cv_fallback_activity_rules: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+        ("vehicle+person", ("vehicle", "person")),
+        ("vehicle", ("vehicle",)),
+        ("person", ("person",)),
+    )
+
+
+@dataclass(frozen=True)
 class VLMConfig:
     """Vision language model defaults."""
+    enabled: bool = True
     model_name: str = "blip2"
     model_repo: str = "Salesforce/blip2-opt-2.7b"
+    prompt: str = (
+        "Analyze this drone security frame. Choose object labels only from {object_categories}. "
+        "Choose one activity_type only from {activity_categories}. "
+        "Return only JSON with keys: description, objects, activity_type."
+    )
+    max_new_tokens: int = 120
     use_cv_fallback: bool = True
-    fallback_on_load_error: bool = True
+    fallback_on_load_error: bool = False
     simulated_confidence: float = 0.95
     cv_fallback_confidence: float = 0.65
     vlm_confidence: float = 0.85
@@ -96,5 +144,6 @@ STREAM_CONFIG = StreamConfig()
 PIPELINE_CONFIG = PipelineConfig()
 DATABASE_CONFIG = DatabaseConfig()
 SIMULATOR_CONFIG = SimulatorConfig()
+DETECTION_CONFIG = DetectionConfig()
 VLM_CONFIG = VLMConfig()
 ALERT_RULE_CONFIG = AlertRuleConfig()

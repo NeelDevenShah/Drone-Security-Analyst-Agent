@@ -12,8 +12,10 @@ import queue
 
 try:
     from .config import VLM_CONFIG
+    from .detection import classify_activity_from_rules, extract_objects_from_keywords
 except ImportError:
     from config import VLM_CONFIG
+    from detection import classify_activity_from_rules, extract_objects_from_keywords
 
 
 @dataclass
@@ -59,18 +61,23 @@ class FrameDescriptionGenerator:
             FrameDescription with analysis results
         """
         start_time = datetime.now()
+        confidence = VLM_CONFIG.cv_fallback_confidence
         
         # Try VLM first
-        if self.vlm_processor:
-            description = self._describe_with_vlm(frame, frame_id)
+        if self.vlm_processor and getattr(self.vlm_processor, "is_available", False):
+            analysis = self._analyze_with_vlm(frame, frame_id, timestamp)
+            description = analysis.description
+            objects = analysis.objects
+            activity = analysis.activity_type
+            confidence = analysis.confidence
         elif self.use_cv_fallback:
             description = self._describe_with_cv(frame)
+            objects = self._extract_objects_from_description(description)
+            activity = self._classify_activity(frame, objects)
         else:
             description = "Frame analysis unavailable"
-        
-        # Extract objects and activity
-        objects = self._extract_objects_from_description(description)
-        activity = self._classify_activity(frame, objects)
+            objects = ["scene"]
+            activity = "empty"
         
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         
@@ -80,30 +87,38 @@ class FrameDescriptionGenerator:
             description=description,
             objects=objects,
             activity_type=activity,
-            confidence=VLM_CONFIG.vlm_confidence if self.vlm_processor else VLM_CONFIG.cv_fallback_confidence,
+            confidence=confidence,
             processing_time_ms=processing_time
         )
 
-    def _describe_with_vlm(self, frame: np.ndarray, frame_id: int) -> str:
+    def _analyze_with_vlm(self, frame: np.ndarray, frame_id: int, timestamp: str):
         """Use VLM to describe frame"""
-        # Convert BGR to RGB for VLM
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
         # Prepare frame data
         frame_data = {
             "frame_id": frame_id,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": timestamp,
+            "location": "Drone-Aerial",
+            "frame_data": frame,
             "description": "",  # Will be filled by VLM
             "objects": [],
         }
         
         # Analyze with VLM
         try:
-            analysis = self.vlm_processor.analyze_frame(frame_data)
-            return analysis.description
+            return self.vlm_processor.analyze_frame(frame_data)
         except Exception as e:
+            if not VLM_CONFIG.fallback_on_load_error:
+                raise RuntimeError("VLM analysis failed") from e
+
             print(f"VLM analysis failed: {e}")
-            return self._describe_with_cv(frame)
+            description = self._describe_with_cv(frame)
+            objects = self._extract_objects_from_description(description)
+            return type("FallbackAnalysis", (), {
+                "description": description,
+                "objects": objects,
+                "activity_type": self._classify_activity(frame, objects),
+                "confidence": VLM_CONFIG.cv_fallback_confidence,
+            })()
 
     def _describe_with_cv(self, frame: np.ndarray) -> str:
         """
@@ -168,42 +183,13 @@ class FrameDescriptionGenerator:
 
     def _extract_objects_from_description(self, description: str) -> List[str]:
         """
-        Extract object names from description text
+        Extract object categories from fallback description text.
         """
-        objects = []
-        
-        # Keywords to search for
-        object_keywords = {
-            "vehicle": ["truck", "car", "sedan", "vehicle", "automobile", "van"],
-            "person": ["person", "people", "human", "man", "woman", "individual"],
-            "building": ["building", "structure", "house", "garage", "warehouse"],
-            "gate": ["gate", "fence", "barrier", "entrance", "door"],
-            "road": ["road", "street", "path", "pavement", "asphalt"],
-            "nature": ["grass", "vegetation", "trees", "outdoor", "field"],
-        }
-        
-        desc_lower = description.lower()
-        
-        for category, keywords in object_keywords.items():
-            for keyword in keywords:
-                if keyword in desc_lower:
-                    objects.append(category)
-                    break  # Only add category once
-        
-        return objects if objects else ["scene"]
+        return extract_objects_from_keywords(description)
 
     def _classify_activity(self, frame: np.ndarray, objects: List[str]) -> str:
-        """Classify activity type based on frame and objects"""
-        
-        # Simple heuristics
-        if "vehicle" in objects:
-            return "vehicle"
-        elif "person" in objects:
-            return "person"
-        elif "vehicle" in objects and "person" in objects:
-            return "vehicle+person"
-        else:
-            return "empty"
+        """Classify fallback activity from configured rules."""
+        return classify_activity_from_rules(objects)
 
     def describe_frames_batch(self, frames: List[Dict[str, Any]]) -> List[FrameDescription]:
         """

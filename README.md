@@ -271,6 +271,33 @@ ALERT_RULE_CONFIG = AlertRuleConfig(
 )
 ```
 
+### Object Detection Categories
+
+Edit `DETECTION_CONFIG` in `src/config.py` to change the labels the VLM is allowed to choose. The VLM prompt is built from these values and asks the model to return JSON with `description`, `objects`, and `activity_type`.
+
+```python
+DETECTION_CONFIG = DetectionConfig(
+    object_categories=(
+        "vehicle",
+        "person",
+        "drone",
+        "fire",
+    ),
+    activity_categories=(
+        "vehicle+person",
+        "vehicle",
+        "person",
+        "drone",
+        "fire",
+        "empty",
+    ),
+    fallback_object="scene",
+    fallback_activity="empty",
+)
+```
+
+`cv_fallback_keywords` and `cv_fallback_activity_rules` in the same config are only used when the real VLM is unavailable and the system has to use the OpenCV fallback.
+
 ### VLM, Database, and Simulator Defaults
 
 Edit these config blocks in `src/config.py`:
@@ -279,8 +306,9 @@ Edit these config blocks in `src/config.py`:
 VLM_CONFIG = VLMConfig(
     model_name="blip2",
     model_repo="Salesforce/blip2-opt-2.7b",
+    prompt="Analyze this drone security frame. Choose object labels only from {object_categories}. Choose one activity_type only from {activity_categories}. Return only JSON with keys: description, objects, activity_type.",
     use_cv_fallback=True,
-    fallback_on_load_error=True,
+    fallback_on_load_error=False,
 )
 
 DATABASE_CONFIG = DatabaseConfig(

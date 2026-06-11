@@ -7,9 +7,9 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 
 try:
-    from .config import VLM_CONFIG
+    from .config import DETECTION_CONFIG, VLM_CONFIG
 except ImportError:
-    from config import VLM_CONFIG
+    from config import DETECTION_CONFIG, VLM_CONFIG
 
 
 @dataclass
@@ -43,7 +43,13 @@ class VLMProcessor:
         self.model_name = model_name
         self.model = None
         self.processor = None
+        self.device = "cpu"
         self._initialize_model()
+
+    @property
+    def is_available(self) -> bool:
+        """Whether a real image model is loaded and ready for inference."""
+        return self.model is not None and self.processor is not None
 
     def _initialize_model(self):
         """
@@ -57,17 +63,23 @@ class VLMProcessor:
                 from transformers import Blip2Processor, Blip2ForConditionalGeneration
                 import torch
                 
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-                print(f"Using device: {device}")
+                self.device = "cuda" if torch.cuda.is_available() else "cpu"
+                print(f"Using device: {self.device}")
                 
                 self.processor = Blip2Processor.from_pretrained(VLM_CONFIG.model_repo)
                 self.model = Blip2ForConditionalGeneration.from_pretrained(
                     VLM_CONFIG.model_repo,
-                    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-                    device_map=device
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
                 )
+                self.model.to(self.device)
+                self.model.eval()
                 print("✓ BLIP-2 model loaded successfully")
             except ImportError:
+                if not VLM_CONFIG.fallback_on_load_error:
+                    raise RuntimeError(
+                        "Failed to initialize blip2 VLM: transformers is not installed"
+                    )
+
                 print("⚠ Transformers not installed. Using mock VLM processor.")
                 self.processor = None
                 self.model = None
@@ -80,6 +92,9 @@ class VLMProcessor:
                 self.processor = None
                 self.model = None
         else:
+            if not VLM_CONFIG.fallback_on_load_error:
+                raise ValueError(f"VLM model {self.model_name!r} is not configured")
+
             print(f"⚠ Model {self.model_name} not yet configured. Using mock processor.")
 
     def analyze_frame(self, frame_data: Dict[str, Any]) -> VLMAnalysis:
@@ -98,7 +113,7 @@ class VLMProcessor:
         # In simulation mode, we use pre-generated descriptions
         # In production, we would analyze actual images
         
-        if self.model is None:
+        if not self.is_available:
             # Simulation mode: use provided description
             return self._analyze_simulated_frame(frame_data)
         else:
@@ -120,22 +135,148 @@ class VLMProcessor:
 
     def _analyze_real_frame(self, frame_data: Dict[str, Any]) -> VLMAnalysis:
         """Analyze actual image with VLM (production mode)"""
-        # This would be implemented when processing real images
-        raise NotImplementedError("Real image processing not yet implemented")
+        frame = frame_data.get("frame_data")
+        if frame is None:
+            frame = frame_data.get("image")
 
-    def extract_objects(self, description: str) -> List[str]:
-        """
-        Extract objects from a description.
-        Uses simple pattern matching or LLM in production.
-        """
-        objects = description.lower().split()
-        # Filter to likely objects
-        common_objects = {
-            "truck", "car", "sedan", "person", "people", "gate", "garage",
-            "fence", "parking", "vehicle", "blue", "ford", "f150", "silver"
+        if frame is None:
+            raise ValueError("VLM frame analysis requires 'frame_data' or 'image'")
+
+        image = self._prepare_image(frame)
+
+        try:
+            import torch
+
+            inputs = self.processor(
+                images=image,
+                text=self._build_prompt(),
+                return_tensors="pt"
+            )
+            inputs = {key: value.to(self.device) for key, value in inputs.items()}
+
+            with torch.no_grad():
+                generated_ids = self.model.generate(
+                    **inputs,
+                    max_new_tokens=VLM_CONFIG.max_new_tokens
+                )
+
+            description = self.processor.batch_decode(
+                generated_ids,
+                skip_special_tokens=True
+            )[0].strip()
+        except Exception:
+            if not VLM_CONFIG.fallback_on_load_error:
+                raise
+            raise
+
+        parsed_result = self._parse_model_output(description)
+
+        return VLMAnalysis(
+            frame_id=frame_data.get("frame_id"),
+            timestamp=frame_data.get("timestamp"),
+            location=frame_data.get("location"),
+            description=parsed_result["description"],
+            objects=parsed_result["objects"],
+            activity_type=parsed_result["activity_type"],
+            confidence=VLM_CONFIG.vlm_confidence,
+            vlm_model=self.model_name
+        )
+
+    def _prepare_image(self, frame):
+        """Convert an OpenCV/PIL frame into an RGB PIL image for the VLM."""
+        from PIL import Image
+
+        if isinstance(frame, Image.Image):
+            return frame.convert("RGB")
+
+        try:
+            import cv2
+            import numpy as np
+
+            if isinstance(frame, np.ndarray):
+                if frame.ndim == 2:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+                else:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                return Image.fromarray(frame).convert("RGB")
+        except ImportError:
+            pass
+
+        raise TypeError(f"Unsupported frame type for VLM analysis: {type(frame)!r}")
+
+    def _build_prompt(self) -> str:
+        """Build the VLM prompt from configured labels."""
+        return VLM_CONFIG.prompt.format(
+            object_categories=", ".join(DETECTION_CONFIG.object_categories),
+            activity_categories=", ".join(DETECTION_CONFIG.activity_categories),
+        )
+
+    def _parse_model_output(self, raw_output: str) -> Dict[str, Any]:
+        """Parse and validate structured VLM output."""
+        parsed = self._loads_json_object(raw_output)
+
+        if not parsed:
+            return {
+                "description": raw_output or "Frame analyzed by VLM, no caption generated",
+                "objects": [DETECTION_CONFIG.fallback_object],
+                "activity_type": DETECTION_CONFIG.fallback_activity,
+            }
+
+        objects = parsed.get("objects", [])
+        if isinstance(objects, str):
+            objects = [objects]
+        allowed_objects = {
+            category.lower(): category
+            for category in DETECTION_CONFIG.object_categories
         }
-        extracted = [obj for obj in objects if obj in common_objects]
-        return extracted if extracted else ["unknown"]
+        normalized_objects = [
+            allowed_objects[obj.strip().lower()]
+            for obj in objects
+            if isinstance(obj, str) and obj.strip().lower() in allowed_objects
+        ]
+        if not normalized_objects:
+            normalized_objects = [DETECTION_CONFIG.fallback_object]
+
+        activity_type = parsed.get("activity_type", DETECTION_CONFIG.fallback_activity)
+        allowed_activities = {
+            activity.lower(): activity
+            for activity in DETECTION_CONFIG.activity_categories
+        }
+        if isinstance(activity_type, str) and activity_type.strip().lower() in allowed_activities:
+            activity_type = allowed_activities[activity_type.strip().lower()]
+        else:
+            activity_type = DETECTION_CONFIG.fallback_activity
+
+        description = parsed.get("description") or raw_output or "Frame analyzed by VLM"
+
+        return {
+            "description": description,
+            "objects": normalized_objects,
+            "activity_type": activity_type,
+        }
+
+    def _loads_json_object(self, text: str) -> Optional[Dict[str, Any]]:
+        """Load the first JSON object from a model response."""
+        if not text:
+            return None
+
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            pass
+
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+
+        try:
+            parsed = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            return None
+
+        return parsed if isinstance(parsed, dict) else None
 
     def batch_analyze_frames(self, frames: List[Dict[str, Any]]) -> List[VLMAnalysis]:
         """

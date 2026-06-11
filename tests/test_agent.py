@@ -16,7 +16,7 @@ from dataclasses import asdict
 @pytest.fixture
 def agent():
     """Create agent instance"""
-    agent = SecurityAnalystAgent(db_path="/tmp/test_agent.db")
+    agent = SecurityAnalystAgent(db_path="/tmp/test_agent.db", enable_vlm=False)
     yield agent
     agent.close()
 
