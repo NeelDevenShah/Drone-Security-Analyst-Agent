@@ -2,8 +2,9 @@
 LangChain Agent: Orchestrates security analysis, pattern detection, and Q&A
 """
 import sys
+import math
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional, Callable, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -13,7 +14,58 @@ sys.path.insert(0, str(Path(__file__).parent))
 from frame_indexer import FrameIndexer
 from alert_engine import AlertEngine, Alert
 from vlm_processor import VLMProcessor
-from config import DATABASE_CONFIG, VLM_CONFIG
+from config import DATABASE_CONFIG, VLM_CONFIG, LLM_CONFIG
+
+
+class BM25:
+    """Pure Python BM25 Searcher for keyword matching"""
+    def __init__(self, corpus: List[Dict[str, Any]], k1: float = 1.5, b: float = 0.75):
+        self.corpus = corpus
+        self.k1 = k1
+        self.b = b
+        self.documents = []
+        self.doc_lens = []
+        
+        for item in corpus:
+            text = f"{item.get('description', '')} {item.get('location', '')} {' '.join(item.get('objects', []))} {item.get('activity_type', '')}"
+            words = [w.lower().strip(",.?!()\"'") for w in text.split() if w]
+            self.documents.append(words)
+            self.doc_lens.append(len(words))
+            
+        self.avgdl = sum(self.doc_lens) / len(self.doc_lens) if self.doc_lens else 0
+        self.doc_count = len(corpus)
+        
+        self.df = {}
+        for doc in self.documents:
+            unique_words = set(doc)
+            for word in unique_words:
+                self.df[word] = self.df.get(word, 0) + 1
+                
+        self.idf = {}
+        for word, freq in self.df.items():
+            self.idf[word] = math.log((self.doc_count - freq + 0.5) / (freq + 0.5) + 1.0)
+
+    def score(self, query: str) -> List[Tuple[float, Dict[str, Any]]]:
+        query_words = [w.lower().strip(",.?!()\"'") for w in query.split() if w]
+        scores = []
+        
+        for idx, doc in enumerate(self.documents):
+            score = 0.0
+            doc_len = self.doc_lens[idx]
+            word_counts = {}
+            for w in doc:
+                word_counts[w] = word_counts.get(w, 0) + 1
+                
+            for qw in query_words:
+                if qw in word_counts:
+                    tf = word_counts[qw]
+                    idf_val = self.idf.get(qw, 0.0)
+                    numerator = tf * (self.k1 + 1)
+                    denominator = tf + self.k1 * (1 - self.b + self.b * (doc_len / self.avgdl))
+                    score += idf_val * (numerator / denominator)
+            scores.append((score, self.corpus[idx]))
+            
+        return scores
 
 
 @dataclass
@@ -48,10 +100,74 @@ class SecurityAnalystAgent:
     ):
         """Initialize the agent with indexer and alert engine"""
         self.indexer = FrameIndexer(db_path)
-        self.alert_engine = AlertEngine()
         self.vlm_processor = vlm_processor or (VLMProcessor(model_name=vlm_model) if enable_vlm else None)
+        self.alert_engine = AlertEngine(vlm_processor=self.vlm_processor, llm_processor=self)
         self.context = AgentContext()
         self.tools = self._register_tools()
+        
+        # Load 2B LLM for Q&A
+        self.llm = None
+        self.tokenizer = None
+        self.llm_model_name = LLM_CONFIG.model_name
+        self.llm_model_repo = LLM_CONFIG.model_repo
+        if LLM_CONFIG.enabled:
+            self._initialize_llm()
+
+    def _initialize_llm(self):
+        """Initialize the 2B LLM model for Q&A (supports vLLM and Transformers fallback)"""
+        print(f"Initializing {self.llm_model_name} QA LLM (Model: {self.llm_model_repo})...")
+        if self.llm_model_name == "vllm":
+            try:
+                from vllm import LLM, SamplingParams
+                print(f"Loading {self.llm_model_repo} via vLLM...")
+                self.llm = LLM(model=self.llm_model_repo, trust_remote_code=True)
+                self.sampling_params = SamplingParams(
+                    max_tokens=LLM_CONFIG.max_new_tokens,
+                    temperature=LLM_CONFIG.temperature
+                )
+                print("✓ QA LLM loaded via vLLM successfully")
+            except ImportError:
+                print("⚠ vLLM not installed. Using mock/rule-based QA engine.")
+                self.llm = None
+            except Exception as e:
+                print(f"⚠ Failed to load vLLM QA model: {e}. Using mock/rule-based QA engine.")
+                self.llm = None
+        elif self.llm_model_name == "transformers":
+            try:
+                from transformers import AutoTokenizer, AutoModelForCausalLM
+                import torch
+                self.device = "cuda" if torch.cuda.is_available() else "cpu"
+                self.tokenizer = AutoTokenizer.from_pretrained(self.llm_model_repo)
+                self.llm = AutoModelForCausalLM.from_pretrained(
+                    self.llm_model_repo,
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
+                )
+                self.llm.to(self.device)
+                print("✓ QA LLM loaded via Transformers successfully")
+            except Exception as e:
+                print(f"⚠ Failed to load Transformers QA model: {e}")
+                self.llm = None
+
+    def query_llm(self, prompt: str) -> str:
+        """Query the Gemma LLM model directly"""
+        if self.llm is None:
+            return ""
+        try:
+            if self.llm_model_name == "vllm":
+                outputs = self.llm.generate([prompt], sampling_params=self.sampling_params)
+                return outputs[0].outputs[0].text.strip()
+            else:
+                import torch
+                inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+                with torch.no_grad():
+                    outputs = self.llm.generate(**inputs, max_new_tokens=256, temperature=0.1)
+                decoded = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                if "model\n" in decoded:
+                    return decoded.split("model\n")[-1].strip()
+                return decoded.strip()
+        except Exception as e:
+            print(f"⚠ Gemma query failed: {e}")
+            return ""
 
     def _register_tools(self) -> Dict[str, Callable]:
         """Register available tools for the agent"""
@@ -167,41 +283,77 @@ class SecurityAnalystAgent:
             ]
         }
 
+    def _enrich_frame_with_alert_context(self, frame: Dict[str, Any]) -> Dict[str, Any]:
+        """Add alert context to the frame record"""
+        frame_id = frame.get('frame_id') or frame.get('id')
+        alert_context = []
+        if frame_id is not None:
+            with self.indexer.db_lock:
+                cursor = self.indexer.conn.execute(
+                    "SELECT alert_type, severity, threat_score, message FROM alerts WHERE frame_id = ?",
+                    (frame_id,)
+                )
+                rows = cursor.fetchall()
+                for r in rows:
+                    alert_context.append({
+                        "alert_type": r["alert_type"],
+                        "severity": r["severity"],
+                        "threat_score": r["threat_score"],
+                        "message": r["message"]
+                    })
+        frame["alert_context"] = alert_context
+        return frame
+
     def query_frame_index(self, query: str) -> List[Dict[str, Any]]:
         """
-        Query the frame index with natural language.
+        Query the frame index with natural language using Hybrid Search (BM25 + Embeddings).
         
         Args:
             query: Natural language query
-                Examples:
-                - "Show all truck events"
-                - "What happened at gate at midnight?"
-                - "All people detected"
         
         Returns:
-            Matching frames with metadata
+            Matching frames with metadata and alert context
         """
-        query_lower = query.lower()
+        def enrich(frames):
+            return [self._enrich_frame_with_alert_context(f) for f in frames]
+            
+        all_frames = self.indexer.get_frames_for_shift_summary()
+        if not all_frames:
+            return []
+            
+        # 1. BM25 Search
+        bm25_searcher = BM25(all_frames)
+        bm25_scores = bm25_searcher.score(query)
+        bm25_sorted = sorted(bm25_scores, key=lambda x: x[0], reverse=True)
         
-        # Parse query intent
-        if "truck" in query_lower or "vehicle" in query_lower:
-            return self.indexer.query_by_activity_type("vehicle")
-        elif "person" in query_lower or "people" in query_lower:
-            return self.indexer.query_by_activity_type("person")
-        elif "gate" in query_lower:
-            return self.indexer.query_by_location("Main Gate")
-        elif "garage" in query_lower:
-            return self.indexer.query_by_location("Garage")
-        elif "midnight" in query_lower or "night" in query_lower:
-            # Query specific time range
-            return self.indexer.query_by_timestamp_range("2026-06-13 23:00:00", "2026-06-14 06:00:00")
-        else:
-            # Return all frames sorted by timestamp
-            return self.indexer.get_frames_for_shift_summary()
+        # 2. ChromaDB Semantic Search
+        semantic_frames = self.indexer.query_by_semantic_similarity(query, limit=len(all_frames))
+        
+        # 3. Reciprocal Rank Fusion (RRF)
+        rrf_scores = {}
+        k = 60
+        
+        # Add BM25 ranks
+        for rank, (_, frame) in enumerate(bm25_sorted):
+            fid = frame['frame_id']
+            rrf_scores[fid] = rrf_scores.get(fid, 0.0) + (1.0 / (k + rank + 1))
+            
+        # Add ChromaDB ranks
+        for rank, frame in enumerate(semantic_frames):
+            fid = frame['frame_id']
+            rrf_scores[fid] = rrf_scores.get(fid, 0.0) + (1.0 / (k + rank + 1))
+            
+        # Sort by RRF score descending
+        frames_by_id = {f['frame_id']: f for f in all_frames}
+        sorted_fids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
+        
+        # Return top 10 matching frames enriched with alert context
+        matching_frames = [frames_by_id[fid] for fid in sorted_fids[:10] if fid in frames_by_id]
+        return enrich(matching_frames)
 
     def answer_question(self, question: str) -> str:
         """
-        Answer user questions about the shift.
+        Answer user questions about the shift using dynamic Hybrid Search.
         
         Args:
             question: User question
@@ -211,35 +363,99 @@ class SecurityAnalystAgent:
         """
         q_lower = question.lower()
         
-        if "how many" in q_lower and "vehicle" in q_lower:
-            vehicles = self.indexer.query_by_activity_type("vehicle")
-            return f"Detected {len(vehicles)} vehicle events."
-        
-        elif "how many" in q_lower and "person" in q_lower:
-            people = self.indexer.query_by_activity_type("person")
-            return f"Detected {len(people)} person events."
-        
-        elif "what objects" in q_lower or "what was" in q_lower:
+        # Query frame index using dynamic Hybrid Search (Embedding + BM25)
+        frames = self.query_frame_index(question)
+        if not frames:
+            return "Based on the security logs, no relevant events were found matching your query."
+            
+        # If the 2B QA LLM is loaded, use it to answer the question using the retrieved context!
+        if self.llm is not None:
+            context = "Security logs from current shift:\n"
+            for idx, f in enumerate(frames):
+                alerts_str = ", ".join([f"{a['severity']}: {a['message']}" for a in f['alert_context']]) if f['alert_context'] else "None"
+                context += f"Event {idx+1}: [{f['timestamp']}] Location: {f['location']}, Description: {f['description']}, Objects: {', '.join(f['objects'])}, Activity: {f['activity_type']}, Alerts: {alerts_str}\n"
+            
+            prompt = (
+                f"<bos><start_of_turn>user\n"
+                f"You are a Drone Security Intelligence Assistant. Based ONLY on the following security events, answer the user's question clearly, concisely, and factually. "
+                f"If the answer cannot be found in the events, state that no matching security events were logged.\n\n"
+                f"=== CONTEXT ===\n"
+                f"{context}\n"
+                f"===============\n\n"
+                f"Question: {question}\n<end_of_turn>\n"
+                f"<start_of_turn>model\n"
+            )
+            
+            try:
+                if self.llm_model_name == "vllm":
+                    outputs = self.llm.generate([prompt], sampling_params=self.sampling_params)
+                    return outputs[0].outputs[0].text.strip()
+                else:
+                    import torch
+                    inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+                    with torch.no_grad():
+                        outputs = self.llm.generate(**inputs, max_new_tokens=256, temperature=0.1)
+                    decoded = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                    if "model\n" in decoded:
+                        return decoded.split("model\n")[-1].strip()
+                    return decoded.strip()
+            except Exception as e:
+                print(f"⚠ QA LLM generation failed: {e}. Falling back to dynamic summary.")
+
+        # Case: The question asks about repeated visits / items appearing more than once
+        if "more than once" in q_lower or "repeated" in q_lower or "frequency" in q_lower:
             all_frames = self.indexer.get_frames_for_shift_summary()
-            objects_set = set()
-            for frame in all_frames:
-                objects_set.update(frame['objects'])
-            return f"Objects detected: {', '.join(sorted(objects_set))}"
-        
-        elif "alert" in q_lower or "incident" in q_lower:
-            alerts = self.indexer.get_all_alerts()
-            if not alerts:
-                return "No alerts generated during this period."
-            return f"Generated {len(alerts)} alerts. High severity: {len([a for a in alerts if a['severity'] in ['HIGH', 'CRITICAL']])}"
-        
-        elif "blue" in q_lower and "truck" in q_lower:
-            truck_frames = self.indexer.query_by_object("F150")
-            count = len(truck_frames)
-            times = [f['timestamp'] for f in truck_frames]
-            return f"Blue Ford F150 appeared {count} times at: {', '.join(times)}"
-        
-        else:
-            return "I can answer questions about: vehicles detected, people detected, objects, alerts, and specific events."
+            object_counts = {}
+            for f in all_frames:
+                for obj in f.get('objects', []):
+                    obj_clean = obj.strip()
+                    object_counts[obj_clean] = object_counts.get(obj_clean, 0) + 1
+            
+            repeating_objects = {obj for obj, count in object_counts.items() if count > 1}
+            
+            if not repeating_objects:
+                return "Based on the shift log, no objects appeared more than once."
+                
+            response = f"I detected the following objects appearing more than once: {', '.join(sorted(repeating_objects))}.\nHere are the corresponding frames:\n"
+            for f in frames:
+                has_repeating = any(obj.strip() in repeating_objects for obj in f.get('objects', []))
+                if has_repeating:
+                    alerts_str = ", ".join([f"{a['severity']}: {a['message']}" for a in f['alert_context']]) if f['alert_context'] else "None"
+                    response += f"- [{f['timestamp']}] Location: {f['location']}, Activity: {f['activity_type']}, Objects: {', '.join(f['objects'])}, Alerts: {alerts_str}\n"
+            return response
+            
+        # Case: Counting query
+        if "how many" in q_lower or "count" in q_lower:
+            count = len(frames)
+            category = "event"
+            if "vehicle" in q_lower or "truck" in q_lower or "car" in q_lower:
+                category = "vehicle event"
+            elif "person" in q_lower or "people" in q_lower:
+                category = "person event"
+            elif "alert" in q_lower or "incident" in q_lower:
+                category = "alert/incident"
+                
+            response = f"I found {count} relevant {category}(s) matching your query:\n"
+            for f in frames:
+                alerts_str = ", ".join([f"{a['severity']}: {a['message']}" for a in f['alert_context']]) if f['alert_context'] else "None"
+                response += f"- [{f['timestamp']}] Location: {f['location']}, Description: {f['description']} (Alerts: {alerts_str})\n"
+            return response
+            
+        # Case: Asking what objects or what was seen
+        if "what objects" in q_lower or "what was" in q_lower or "what appeared" in q_lower:
+            objects_seen = set()
+            for f in frames:
+                objects_seen.update(f.get('objects', []))
+            if objects_seen:
+                return f"The following objects were detected in the matching logs: {', '.join(sorted(objects_seen))}."
+            return "No specific objects were identified in the matching records."
+            
+        # General response synthesis from matching frames
+        response = f"Here are the relevant security events found matching your query:\n"
+        for f in frames:
+            alerts_str = ", ".join([f"{a['severity']}: {a['message']}" for a in f['alert_context']]) if f['alert_context'] else "None"
+            response += f"- [{f['timestamp']}] Location: {f['location']}, Activity: {f['activity_type']}, Objects: {', '.join(f['objects'])}, Alerts: {alerts_str}\n"
+        return response
 
     def get_shift_summary(self) -> str:
         """

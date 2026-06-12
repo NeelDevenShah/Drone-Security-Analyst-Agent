@@ -289,6 +289,7 @@ def show_query_interface():
     
     # Display results
     if 'results' in locals() and results:
+        enriched_results = [st.session_state.agent._enrich_frame_with_alert_context(r) for r in results]
         st.subheader("Query Results")
         df_results = pd.DataFrame([
             {
@@ -296,9 +297,10 @@ def show_query_interface():
                 'Location': r['location'],
                 'Activity': r['activity_type'],
                 'Description': r['description'][:40] + "...",
-                'Objects': ', '.join(r['objects'])
+                'Objects': ', '.join(r['objects']),
+                'Alerts': ', '.join([f"{a['severity']}: {a['message']}" for a in r.get('alert_context', [])]) if r.get('alert_context') else "None"
             }
-            for r in results
+            for r in enriched_results
         ])
         st.dataframe(df_results, use_container_width=True, hide_index=True)
     elif 'results' in locals():

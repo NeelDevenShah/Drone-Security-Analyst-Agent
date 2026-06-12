@@ -1,52 +1,45 @@
 # Drone Security Analyst Agent - Feature Specification
 
-## Executive Summary
-The Drone Security Analyst Agent is an intelligent, autonomous system designed to monitor docked drones and fixed properties 24/7. By combining real-time video analysis with telemetry data, the system identifies security events, detects anomalies, and generates immediate alerts—enhancing property security through AI-driven automation.
+## Product Value
+The Drone Security Analyst Agent turns a docked drone into an always-on property security analyst. Instead of asking owners or guards to manually watch hours of footage, the agent watches the live video feed with telemetry context, detects meaningful events, and produces searchable evidence such as "a blue Ford F150 entered twice today" or immediate alerts such as "person loitering at midnight near main gate."
 
-## Value Proposition
-**For Property Owners:**
-- **24/7 Automated Monitoring**: Continuous property surveillance without human intervention
-- **Intelligent Threat Detection**: AI-powered anomaly detection with contextual awareness
-- **Actionable Intelligence**: Detailed logs and alerts with patterns (e.g., "vehicle entered twice today")
-- **Rapid Response**: Real-time alerts for security incidents (loitering, unusual activity)
-- **Historical Analysis**: Queryable event database for forensic investigation
+For property owners, the real-world impact is faster incident response, fewer missed events, and a reliable daily security record. The system enhances security with automated monitoring while still giving humans clear, explainable alerts and an investigation trail when something happens.
 
 ## Key Requirements
 
-### Requirement 1: Real-Time Frame Analysis & Object Identification
-- Process video frames at regular intervals
-- Use Vision Language Models (VLM) to generate contextual descriptions
-- Extract and log objects: vehicles, people, activities, timestamps, locations
-- Support structured queries: "Show all truck events", "What happened at gate at midnight?"
+### 1. Real-Time Event Understanding
+The agent must process live drone video frames and telemetry together, then convert them into structured security observations.
 
-**Success Criteria:**
-- ✅ Each frame description includes: timestamp, location, objects, activity
-- ✅ Database query returns matching frames with full context
-- ✅ Frame metadata indexed and searchable
+**Must capture:**
+- Timestamp and property location
+- Drone telemetry such as position, altitude, and source metadata
+- Objects and activities such as person, vehicle, gate, road, perimeter, or empty scene
+- Natural-language description suitable for human review
 
-### Requirement 2: Hybrid Alert System (Rules + LLM)
-- **Rule-Based Layer**: Static triggers (midnight + person = alert)
-- **LLM Layer**: Dynamic contextual analysis ("Is this activity unusual based on history?")
-- **Threat Scoring**: Dynamic risk assessment (1-10 scale)
-- Generate immediate alerts with severity levels
+**Example output:**
+`00:12:31 near Main Gate: person detected, loitering activity, high confidence`
 
-**Success Criteria:**
-- ✅ Alert triggered for loitering at midnight near main gate
-- ✅ Repeat vehicle visits flagged as MEDIUM priority
-- ✅ Unknown behavior at perimeter flagged as MEDIUM priority
-- ✅ All alerts logged with timestamp, location, reason, threat_score
+### 2. Immediate Security Alerts
+The agent must raise alerts when an observation indicates a security-relevant event, with severity and reason attached.
 
-### Requirement 3: Semantic Frame Indexing (Cross-Domain)
-- Store frame metadata with embeddings in hybrid database
-- Enable semantic search over frames: "Show all suspicious activity"
-- Support temporal queries: "Events between 23:00-02:00"
-- Implement efficient, scalable indexing
+**Required alert cases:**
+- Person loitering during late-night hours
+- Vehicle activity after hours or repeated visits by the same object class
+- Activity near perimeter, fence, gate, or restricted zones
 
-**Success Criteria:**
-- ✅ Frames stored with metadata, embeddings, timestamps
-- ✅ Semantic search returns relevant frames
-- ✅ Temporal filtering works correctly
-- ✅ Query performance acceptable (< 1s response)
+**Example alert:**
+`HIGH: Person loitering near main gate at midnight. Threat score 8/10.`
+
+### 3. Searchable Evidence and Daily Recall
+The agent must store analyzed events so property owners can ask questions later and get useful answers without replaying footage manually.
+
+**Required queries:**
+- "Show all vehicle events today"
+- "Was anyone near the main gate at midnight?"
+- "Which objects appeared more than once?"
+
+**Expected result:**
+The system returns matching frame records with timestamps, object labels, activity type, location, and alert context.
 
 ---
 

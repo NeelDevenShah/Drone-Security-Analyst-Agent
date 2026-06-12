@@ -115,6 +115,16 @@ class VLMConfig:
 
 
 @dataclass(frozen=True)
+class LLMConfig:
+    """Language model defaults for Q&A."""
+    enabled: bool = True
+    model_name: str = "vllm"
+    model_repo: str = "google/gemma-1.1-2b-it"
+    max_new_tokens: int = 256
+    temperature: float = 0.1
+
+
+@dataclass(frozen=True)
 class AlertRuleConfig:
     """Alert rule thresholds and severity values."""
     loitering_hours: Tuple[int, ...] = (23, 0, 1, 2)
@@ -146,4 +156,5 @@ DATABASE_CONFIG = DatabaseConfig()
 SIMULATOR_CONFIG = SimulatorConfig()
 DETECTION_CONFIG = DetectionConfig()
 VLM_CONFIG = VLMConfig()
+LLM_CONFIG = LLMConfig()
 ALERT_RULE_CONFIG = AlertRuleConfig()

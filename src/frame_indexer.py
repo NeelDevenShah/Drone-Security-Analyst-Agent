@@ -10,6 +10,13 @@ from datetime import datetime
 from pathlib import Path
 
 try:
+    import chromadb
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    chromadb = None
+    SentenceTransformer = None
+
+try:
     from .config import DATABASE_CONFIG
 except ImportError:
     from config import DATABASE_CONFIG
@@ -30,6 +37,21 @@ class FrameIndexer:
         self.conn = None
         self.db_lock = threading.RLock()
         self._initialize_database()
+        
+        # ChromaDB & SentenceTransformer initialization
+        self.chroma_client = None
+        self.chroma_collection = None
+        self.embed_model = None
+        
+        if chromadb is not None and SentenceTransformer is not None:
+            try:
+                persist_dir = str(Path(self.db_path).parent / "chroma_db")
+                self.chroma_client = chromadb.PersistentClient(path=persist_dir)
+                self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+                self.chroma_collection = self.chroma_client.get_or_create_collection("drone_frames")
+                print("✓ Initialized ChromaDB & SentenceTransformer for FrameIndexer")
+            except Exception as e:
+                print(f"⚠ Failed to initialize ChromaDB/SentenceTransformer: {e}")
 
     def _initialize_database(self):
         """Create SQLite tables for frame storage"""
@@ -126,7 +148,32 @@ class FrameIndexer:
             ''', (frame_id, timestamp, location, description, objects_json, activity_type, threat_score, telemetry_json))
 
             self.conn.commit()
-            return cursor.lastrowid
+            last_id = cursor.lastrowid
+
+        # Index in ChromaDB if enabled
+        if self.chroma_collection is not None and self.embed_model is not None:
+            try:
+                doc_str = f"Location: {location}. Description: {description}. Objects: {', '.join(objects)}. Activity: {activity_type}."
+                embedding = self.embed_model.encode(doc_str).tolist()
+                
+                metadata = {
+                    "frame_id": frame_id,
+                    "timestamp": timestamp,
+                    "location": location,
+                    "activity_type": activity_type,
+                    "threat_score": threat_score
+                }
+                
+                self.chroma_collection.upsert(
+                    ids=[str(frame_id)],
+                    embeddings=[embedding],
+                    metadatas=[metadata],
+                    documents=[doc_str]
+                )
+            except Exception as e:
+                print(f"⚠ Failed to store embedding in ChromaDB: {e}")
+
+        return last_id
 
     def store_alert(
         self,
@@ -240,6 +287,45 @@ class FrameIndexer:
             ''', (f'%{object_keyword}%',))
 
             return self._fetch_as_dicts(cursor)
+
+    def query_by_semantic_similarity(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        Perform semantic similarity search using ChromaDB.
+        """
+        if self.chroma_collection is None or self.embed_model is None:
+            return []
+            
+        try:
+            query_embedding = self.embed_model.encode(query).tolist()
+            results = self.chroma_collection.query(
+                query_embeddings=[query_embedding],
+                n_results=limit
+            )
+            
+            frame_ids = []
+            if results and 'metadatas' in results and results['metadatas']:
+                for meta_list in results['metadatas']:
+                    for meta in meta_list:
+                        if 'frame_id' in meta:
+                            frame_ids.append(meta['frame_id'])
+            
+            if not frame_ids:
+                return []
+                
+            placeholders = ",".join("?" for _ in frame_ids)
+            with self.db_lock:
+                cursor = self.conn.execute(
+                    f"SELECT * FROM frames WHERE frame_id IN ({placeholders})",
+                    frame_ids
+                )
+                frames = self._fetch_as_dicts(cursor)
+                
+                frames_map = {f['frame_id']: f for f in frames}
+                sorted_frames = [frames_map[fid] for fid in frame_ids if fid in frames_map]
+                return sorted_frames
+        except Exception as e:
+            print(f"⚠ Semantic similarity query failed: {e}")
+            return []
 
     def get_all_alerts(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get all alerts, most recent first"""
