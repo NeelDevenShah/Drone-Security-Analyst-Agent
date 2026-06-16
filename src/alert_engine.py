@@ -116,8 +116,8 @@ class AlertEngine:
         # Add to history
         self.add_frame_to_history(frame)
         
-        # Try direct Gemma LLM threat decision-making first
-        gemma_detected_threat = False
+        # Try direct SmolLM2 LLM threat decision-making first
+        llm_detected_threat = False
         if self.llm_processor is not None and getattr(self.llm_processor, "llm", None) is not None:
             # Query similar historical frames to find past visits to this area (since the drone is moving)
             similar_history_frames = []
@@ -140,10 +140,11 @@ class AlertEngine:
                 history_context += "=========================================================================\n\n"
 
             prompt = (
-                f"<bos><start_of_turn>user\n"
+                f"<|im_start|>system\n"
                 f"You are a Drone Security Alert Evaluator. Assess if the following security event description warrants sending an alert. "
                 f"Look for threats like loitering/lingering over time in the same area, perimeter breaches, restricted area entry, or suspicious vehicles.\n"
-                f"Because the drone is moving, compare the current event with the provided visually/textually similar past events from drone memory to determine if an object/person is loitering or persistent in this area.\n\n"
+                f"Because the drone is moving, compare the current event with the provided visually/textually similar past events from drone memory to determine if an object/person is loitering or persistent in this area.<|im_end|>\n"
+                f"<|im_start|>user\n"
                 f"{history_context}"
                 f"=== CURRENT EVENT DETAILS ===\n"
                 f"Timestamp: {frame.get('timestamp')}\n"
@@ -157,30 +158,30 @@ class AlertEngine:
                 f"- alert_type (string, e.g., loitering_midnight, perimeter_breach, night_vehicle, none)\n"
                 f"- severity (string: LOW, MEDIUM, HIGH, CRITICAL)\n"
                 f"- threat_score (integer 1 to 10)\n"
-                f"- message (string alert message explaining the threat, comparing with past events if loitering is detected)\n<end_of_turn>\n"
-                f"<start_of_turn>model\n"
+                f"- message (string alert message explaining the threat, comparing with past events if loitering is detected)<|im_end|>\n"
+                f"<|im_start|>assistant\n"
             )
             
             try:
                 llm_response = self.llm_processor.query_llm(prompt)
                 parsed = self._loads_json_object(llm_response)
                 if parsed and isinstance(parsed, dict) and parsed.get("threat_detected"):
-                    gemma_alert = Alert(
+                    llm_alert = Alert(
                         frame_id=frame['frame_id'],
                         alert_type=parsed.get("alert_type", "suspicious_activity"),
                         severity=parsed.get("severity", "MEDIUM"),
                         threat_score=parsed.get("threat_score", 5),
-                        message=parsed.get("message", "Gemma LLM Alert: suspicious activity detected"),
+                        message=parsed.get("message", "LLM Alert: suspicious activity detected"),
                         timestamp=frame['timestamp'],
                         location=frame['location']
                     )
-                    alerts.append(gemma_alert)
-                    gemma_detected_threat = True
+                    alerts.append(llm_alert)
+                    llm_detected_threat = True
             except Exception as e:
-                print(f"⚠ Gemma threat analysis failed: {e}")
+                print(f"⚠ LLM threat analysis failed: {e}")
 
-        # Fallback to direct VLM or rule-based checks if Gemma is not loaded or did not detect a threat
-        if not gemma_detected_threat:
+        # Fallback to direct VLM or rule-based checks if LLM is not loaded or did not detect a threat
+        if not llm_detected_threat:
             vlm_detected_threat = False
             if self.vlm_processor is not None:
                 try:

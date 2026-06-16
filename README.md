@@ -1,6 +1,6 @@
 # Drone Security Analyst Agent 🛸
 
-An intelligent AI-powered security monitoring system that analyzes drone video feeds in real-time to detect threats, identify objects, and generate actionable security alerts. The system utilizes a Vision Language Model (VLM) for scene understanding, spatial-temporal memory indexing with SQLite and ChromaDB, and a Large Language Model (Gemma-1.1-2b-it) for contextual threat validation and natural language query-answering.
+An intelligent AI-powered security monitoring system that analyzes drone video feeds in real-time to detect threats, identify objects, and generate actionable security alerts. The system utilizes a Vision Language Model (VLM) for scene understanding, spatial-temporal memory indexing with SQLite and ChromaDB, and a Large Language Model (SmolLM2-1.7B-Instruct) for contextual threat validation and natural language query-answering.
 
 ---
 
@@ -25,7 +25,7 @@ An intelligent AI-powered security monitoring system that analyzes drone video f
           └────────────┬────────────┘
                        │
                        ▼
-       Alert Engine (Rules + Gemma LLM)
+       Alert Engine (Rules + SmolLM2 LLM)
      (Checks heuristics & detects patterns)
                        │
                        ▼
@@ -42,7 +42,7 @@ Streamlit Dashboard            Automated Reports
 
 *   **Real-Time Frame Processing**: GPU-accelerated video streaming and frame extraction (using FFMPEG) with optimized queue handling.
 *   **Intelligent Scene Description**: Automatically generates semantic descriptions and object categories using BLIP-2 or high-throughput vLLM processor configurations.
-*   **Hybrid Alerting System**: Combines deterministic rule-based checks (off-hours loitering, restricted perimeter breach) with a Large Language Model (Gemma-1.1-2b-it) to analyze history and flag complex patterns (e.g., repeat vehicle visits, pattern anomalies).
+*   **Hybrid Alerting System**: Combines deterministic rule-based checks (off-hours loitering, restricted perimeter breach) with a Large Language Model (SmolLM2-1.7B-Instruct) to analyze history and flag complex patterns (e.g., repeat vehicle visits, pattern anomalies).
 *   **Spatial-Temporal Memory**: Stores structured metadata in SQLite for temporal queries and frame embeddings in ChromaDB for semantic similarity search.
 *   **Natural Language Q&A**: Ask the LangChain agent natural language questions (e.g., *"How many vehicles appeared more than once today?"* or *"Was anyone loitering near the perimeter gate at night?"*) and receive contextual answers.
 *   **Interactive Dashboard**: A Streamlit UI providing real-time metrics, live alert logs, historical frame searches, Q&A, and shift report generators.
@@ -72,9 +72,9 @@ To avoid timeout errors during first run, verify loading the models:
     ```bash
     python -c "from transformers import Blip2Processor, Blip2ForConditionalGeneration; Blip2Processor.from_pretrained('Salesforce/blip2-opt-2.7b'); print('✓ VLM Model Checked')"
     ```
-*   **LLM Model (Gemma)**: Download Google Gemma-1.1-2b-it
+*   **LLM Model (SmolLM2)**: Download SmolLM2-1.7B-Instruct
     ```bash
-    python -c "from transformers import AutoTokenizer, AutoModelForCausalLM; AutoTokenizer.from_pretrained('google/gemma-1.1-2b-it'); print('✓ LLM Model Checked')"
+    python -c "from transformers import AutoTokenizer, AutoModelForCausalLM; AutoTokenizer.from_pretrained('HuggingFaceTB/SmolLM2-1.7B-Instruct'); print('✓ LLM Model Checked')"
     ```
 
 ---
@@ -199,7 +199,7 @@ flytbaseAI/
 │   ├── video_stream.py         # Thread-safe FFMPEG stream reader
 │   ├── vlm_processor.py        # BLIP-2 VLM & vLLM image processor
 │   ├── frame_description.py    # OpenCV fallback description generators
-│   ├── alert_engine.py         # Rule + Gemma LLM hybrid alert engine
+│   ├── alert_engine.py         # Rule + SmolLM2 LLM hybrid alert engine
 │   ├── frame_indexer.py        # SQLite + ChromaDB persistence layer
 │   ├── agent.py                # LangChain Agent & tools registry
 │   └── dashboard.py            # Streamlit dashboard script

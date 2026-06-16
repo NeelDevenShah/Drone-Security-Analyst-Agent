@@ -119,7 +119,7 @@ class LLMConfig:
     """Language model defaults for Q&A."""
     enabled: bool = True
     model_name: str = "vllm"
-    model_repo: str = "google/gemma-1.1-2b-it"
+    model_repo: str = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
     max_new_tokens: int = 256
     temperature: float = 0.1
 

@@ -149,7 +149,7 @@ class SecurityAnalystAgent:
                 self.llm = None
 
     def query_llm(self, prompt: str) -> str:
-        """Query the Gemma LLM model directly"""
+        """Query the SmolLM2 LLM model directly"""
         if self.llm is None:
             return ""
         try:
@@ -159,14 +159,13 @@ class SecurityAnalystAgent:
             else:
                 import torch
                 inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+                prompt_len = inputs.input_ids.shape[1]
                 with torch.no_grad():
                     outputs = self.llm.generate(**inputs, max_new_tokens=256, temperature=0.1)
-                decoded = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-                if "model\n" in decoded:
-                    return decoded.split("model\n")[-1].strip()
+                decoded = self.tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
                 return decoded.strip()
         except Exception as e:
-            print(f"⚠ Gemma query failed: {e}")
+            print(f"⚠ SmolLM2 query failed: {e}")
             return ""
 
     def _register_tools(self) -> Dict[str, Callable]:
@@ -376,14 +375,15 @@ class SecurityAnalystAgent:
                 context += f"Event {idx+1}: [{f['timestamp']}] Location: {f['location']}, Description: {f['description']}, Objects: {', '.join(f['objects'])}, Activity: {f['activity_type']}, Alerts: {alerts_str}\n"
             
             prompt = (
-                f"<bos><start_of_turn>user\n"
+                f"<|im_start|>system\n"
                 f"You are a Drone Security Intelligence Assistant. Based ONLY on the following security events, answer the user's question clearly, concisely, and factually. "
-                f"If the answer cannot be found in the events, state that no matching security events were logged.\n\n"
+                f"If the answer cannot be found in the events, state that no matching security events were logged.<|im_end|>\n"
+                f"<|im_start|>user\n"
                 f"=== CONTEXT ===\n"
                 f"{context}\n"
                 f"===============\n\n"
-                f"Question: {question}\n<end_of_turn>\n"
-                f"<start_of_turn>model\n"
+                f"Question: {question}<|im_end|>\n"
+                f"<|im_start|>assistant\n"
             )
             
             try:
@@ -393,11 +393,10 @@ class SecurityAnalystAgent:
                 else:
                     import torch
                     inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+                    prompt_len = inputs.input_ids.shape[1]
                     with torch.no_grad():
                         outputs = self.llm.generate(**inputs, max_new_tokens=256, temperature=0.1)
-                    decoded = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-                    if "model\n" in decoded:
-                        return decoded.split("model\n")[-1].strip()
+                    decoded = self.tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
                     return decoded.strip()
             except Exception as e:
                 print(f"⚠ QA LLM generation failed: {e}. Falling back to dynamic summary.")
