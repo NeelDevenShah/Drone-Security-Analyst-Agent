@@ -114,56 +114,40 @@ class SecurityAnalystAgent:
             self._initialize_llm()
 
     def _initialize_llm(self):
-        """Initialize the 2B LLM model for Q&A (supports vLLM and Transformers fallback)"""
-        print(f"Initializing {self.llm_model_name} QA LLM (Model: {self.llm_model_repo})...")
-        if self.llm_model_name == "vllm":
-            try:
-                from vllm import LLM, SamplingParams
-                print(f"Loading {self.llm_model_repo} via vLLM...")
-                self.llm = LLM(model=self.llm_model_repo, trust_remote_code=True)
-                self.sampling_params = SamplingParams(
-                    max_tokens=LLM_CONFIG.max_new_tokens,
-                    temperature=LLM_CONFIG.temperature
-                )
-                print("✓ QA LLM loaded via vLLM successfully")
-            except ImportError:
-                print("⚠ vLLM not installed. Using mock/rule-based QA engine.")
-                self.llm = None
-            except Exception as e:
-                print(f"⚠ Failed to load vLLM QA model: {e}. Using mock/rule-based QA engine.")
-                self.llm = None
-        elif self.llm_model_name == "transformers":
-            try:
-                from transformers import AutoTokenizer, AutoModelForCausalLM
-                import torch
-                self.device = "cuda" if torch.cuda.is_available() else "cpu"
-                self.tokenizer = AutoTokenizer.from_pretrained(self.llm_model_repo)
-                self.llm = AutoModelForCausalLM.from_pretrained(
-                    self.llm_model_repo,
-                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
-                )
-                self.llm.to(self.device)
-                print("✓ QA LLM loaded via Transformers successfully")
-            except Exception as e:
-                print(f"⚠ Failed to load Transformers QA model: {e}")
-                self.llm = None
+        """Initialize the LLM model for Q&A via HuggingFace Transformers."""
+        print(f"Initializing QA LLM (Model: {self.llm_model_repo})...")
+        try:
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+            import torch
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.tokenizer = AutoTokenizer.from_pretrained(self.llm_model_repo)
+            self.llm = AutoModelForCausalLM.from_pretrained(
+                self.llm_model_repo,
+                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
+            )
+            self.llm.to(self.device)
+            print("✓ QA LLM loaded via Transformers successfully")
+        except Exception as e:
+            print(f"⚠ Failed to load QA model: {e}")
+            self.llm = None
 
     def query_llm(self, prompt: str) -> str:
-        """Query the SmolLM2 LLM model directly"""
+        """Query the SmolLM2 LLM model directly."""
         if self.llm is None:
             return ""
         try:
-            if self.llm_model_name == "vllm":
-                outputs = self.llm.generate([prompt], sampling_params=self.sampling_params)
-                return outputs[0].outputs[0].text.strip()
-            else:
-                import torch
-                inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-                prompt_len = inputs.input_ids.shape[1]
-                with torch.no_grad():
-                    outputs = self.llm.generate(**inputs, max_new_tokens=256, temperature=0.1)
-                decoded = self.tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
-                return decoded.strip()
+            import torch
+            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+            prompt_len = inputs.input_ids.shape[1]
+            with torch.no_grad():
+                outputs = self.llm.generate(
+                    **inputs,
+                    max_new_tokens=LLM_CONFIG.max_new_tokens,
+                    temperature=LLM_CONFIG.temperature,
+                    do_sample=LLM_CONFIG.temperature > 0,
+                )
+            decoded = self.tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
+            return decoded.strip()
         except Exception as e:
             print(f"⚠ SmolLM2 query failed: {e}")
             return ""
@@ -387,17 +371,7 @@ class SecurityAnalystAgent:
             )
             
             try:
-                if self.llm_model_name == "vllm":
-                    outputs = self.llm.generate([prompt], sampling_params=self.sampling_params)
-                    return outputs[0].outputs[0].text.strip()
-                else:
-                    import torch
-                    inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-                    prompt_len = inputs.input_ids.shape[1]
-                    with torch.no_grad():
-                        outputs = self.llm.generate(**inputs, max_new_tokens=256, temperature=0.1)
-                    decoded = self.tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
-                    return decoded.strip()
+                return self.query_llm(prompt)
             except Exception as e:
                 print(f"⚠ QA LLM generation failed: {e}. Falling back to dynamic summary.")
 

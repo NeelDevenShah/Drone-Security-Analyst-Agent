@@ -49,8 +49,6 @@ class VLMProcessor:
     @property
     def is_available(self) -> bool:
         """Whether a real image model is loaded and ready for inference."""
-        if self.model_name == "vllm":
-            return self.model is not None
         return self.model is not None and self.processor is not None
 
     def _initialize_model(self):
@@ -60,24 +58,7 @@ class VLMProcessor:
         """
         print(f"Initializing {self.model_name} VLM...")
         
-        if self.model_name == "vllm":
-            try:
-                from vllm import LLM, SamplingParams
-                print(f"Loading {VLM_CONFIG.model_repo} via vLLM...")
-                self.model = LLM(model=VLM_CONFIG.model_repo, trust_remote_code=True)
-                self.sampling_params = SamplingParams(max_tokens=VLM_CONFIG.max_new_tokens)
-                print("✓ vLLM model loaded successfully")
-            except ImportError:
-                if not VLM_CONFIG.fallback_on_load_error:
-                    raise RuntimeError("Failed to initialize vllm: vllm is not installed")
-                print("⚠ vLLM not installed. Using mock VLM processor.")
-                self.model = None
-            except Exception as e:
-                if not VLM_CONFIG.fallback_on_load_error:
-                    raise
-                print(f"⚠ Failed to load vLLM model: {e}. Using mock VLM processor.")
-                self.model = None
-        elif self.model_name == "blip2":
+        if self.model_name == "blip2":
             try:
                 from transformers import Blip2Processor, Blip2ForConditionalGeneration
                 import torch
@@ -164,33 +145,25 @@ class VLMProcessor:
         image = self._prepare_image(frame)
 
         try:
-            if self.model_name == "vllm":
-                prompt = f"USER: <image>\n{self._build_prompt()}\nASSISTANT:"
-                outputs = self.model.generate({
-                    "prompt": prompt,
-                    "multi_modal_data": {"image": image}
-                }, sampling_params=self.sampling_params)
-                description = outputs[0].outputs[0].text.strip()
-            else:
-                import torch
+            import torch
 
-                inputs = self.processor(
-                    images=image,
-                    text=self._build_prompt(),
-                    return_tensors="pt"
+            inputs = self.processor(
+                images=image,
+                text=self._build_prompt(),
+                return_tensors="pt"
+            )
+            inputs = {key: value.to(self.device) for key, value in inputs.items()}
+
+            with torch.no_grad():
+                generated_ids = self.model.generate(
+                    **inputs,
+                    max_new_tokens=VLM_CONFIG.max_new_tokens
                 )
-                inputs = {key: value.to(self.device) for key, value in inputs.items()}
 
-                with torch.no_grad():
-                    generated_ids = self.model.generate(
-                        **inputs,
-                        max_new_tokens=VLM_CONFIG.max_new_tokens
-                    )
-
-                description = self.processor.batch_decode(
-                    generated_ids,
-                    skip_special_tokens=True
-                )[0].strip()
+            description = self.processor.batch_decode(
+                generated_ids,
+                skip_special_tokens=True
+            )[0].strip()
         except Exception:
             if not VLM_CONFIG.fallback_on_load_error:
                 raise
@@ -318,23 +291,16 @@ class VLMProcessor:
                         "Question: Analyze this drone security frame. Is there a security threat (like loitering, perimeter breach, or off-hours vehicle) in this image? "
                         "Answer in JSON format: {\"threat_detected\": true, \"alert_type\": \"perimeter_breach\", \"severity\": \"HIGH\", \"threat_score\": 8, \"message\": \"Detailed description of threat\"}"
                     )
-                    
-                    if self.model_name == "vllm":
-                        vllm_prompt = f"USER: <image>\n{prompt}\nASSISTANT:"
-                        outputs = self.model.generate({
-                            "prompt": vllm_prompt,
-                            "multi_modal_data": {"image": image}
-                        }, sampling_params=self.sampling_params)
-                        output_text = outputs[0].outputs[0].text.strip()
-                    else:
-                        import torch
-                        inputs = self.processor(images=image, text=prompt, return_tensors="pt")
-                        inputs = {key: value.to(self.device) for key, value in inputs.items()}
-                        
-                        with torch.no_grad():
-                            generated_ids = self.model.generate(**inputs, max_new_tokens=150)
-                        
-                        output_text = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+
+                    import torch
+                    inputs = self.processor(images=image, text=prompt, return_tensors="pt")
+                    inputs = {key: value.to(self.device) for key, value in inputs.items()}
+
+                    with torch.no_grad():
+                        generated_ids = self.model.generate(**inputs, max_new_tokens=150)
+
+                    output_text = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+
                     
                     parsed = self._loads_json_object(output_text)
                     if parsed and isinstance(parsed, dict) and parsed.get("threat_detected"):
