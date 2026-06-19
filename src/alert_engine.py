@@ -103,235 +103,169 @@ class AlertEngine:
     def analyze_frame(self, frame: Dict[str, Any], previous_frames: List[Dict[str, Any]] = None) -> List[Alert]:
         """
         Analyze a frame and generate alerts if needed.
-        
+
+        Detection order:
+          1. Rule-based checks (hour + activity_type + location keywords)
+          2. Embedding-similarity boost (secondary, for richer descriptions)
+        The LLM is used only to *enrich* alert messages on confirmed hits —
+        it never decides whether an alert fires.
+
         Args:
             frame: Current frame data
             previous_frames: Historical frames for context
-        
+
         Returns:
             List of alerts triggered
         """
         alerts = []
-        
+
         # Add to history
         self.add_frame_to_history(frame)
-        
-        # Try direct SmolLM2 LLM threat decision-making first
-        llm_detected_threat = False
-        if self.llm_processor is not None and getattr(self.llm_processor, "llm", None) is not None:
-            # Query similar historical frames to find past visits to this area (since the drone is moving)
-            similar_history_frames = []
-            if getattr(self.llm_processor, "indexer", None) is not None:
-                try:
-                    # Construct a search query that represents the visual/textual scene features
-                    query_str = f"Location: {frame.get('location')}. Description: {frame.get('description')}."
-                    similar_history_frames = self.llm_processor.indexer.query_by_semantic_similarity(query_str, limit=5)
-                    # Filter out the current frame itself if it's already indexed
-                    similar_history_frames = [f for f in similar_history_frames if f['frame_id'] != frame['frame_id']]
-                except Exception as e:
-                    print(f"⚠ Failed to retrieve similar history frames: {e}")
 
-            # Format similar historical frames for spatial-temporal context
-            history_context = ""
-            if similar_history_frames:
-                history_context = "=== RECENT VISUALLY/TEXTUALLY SIMILAR HISTORICAL FRAMES (drone memory) ===\n"
-                for idx, h_frame in enumerate(similar_history_frames):
-                    history_context += f"Past Event {idx+1}: [{h_frame.get('timestamp')}] Location: {h_frame.get('location')}, Description: {h_frame.get('description')}, Objects: {h_frame.get('objects')}, Activity: {h_frame.get('activity_type')}\n"
-                history_context += "=========================================================================\n\n"
+        # --- Primary layer: deterministic rule checks ---
+        rule_alerts = self._check_rules(frame)
+        alerts.extend(rule_alerts)
 
-            prompt = (
-                f"<|im_start|>system\n"
-                f"You are a Drone Security Alert Evaluator. Assess if the following security event description warrants sending an alert. "
-                f"Look for threats like loitering/lingering over time in the same area, perimeter breaches, restricted area entry, or suspicious vehicles.\n"
-                f"Because the drone is moving, compare the current event with the provided visually/textually similar past events from drone memory to determine if an object/person is loitering or persistent in this area.<|im_end|>\n"
-                f"<|im_start|>user\n"
-                f"{history_context}"
-                f"=== CURRENT EVENT DETAILS ===\n"
-                f"Timestamp: {frame.get('timestamp')}\n"
-                f"Location: {frame.get('location')}\n"
-                f"VLM Visual Description: {frame.get('description')}\n"
-                f"Detected Objects: {', '.join(frame.get('objects', []))}\n"
-                f"Activity Type: {frame.get('activity_type')}\n"
-                f"=============================\n\n"
-                f"Decide if an alert should be sent. Return JSON only with keys:\n"
-                f"- threat_detected (boolean)\n"
-                f"- alert_type (string, e.g., loitering_midnight, perimeter_breach, night_vehicle, none)\n"
-                f"- severity (string: LOW, MEDIUM, HIGH, CRITICAL)\n"
-                f"- threat_score (integer 1 to 10)\n"
-                f"- message (string alert message explaining the threat, comparing with past events if loitering is detected)<|im_end|>\n"
-                f"<|im_start|>assistant\n"
-            )
-            
-            try:
-                llm_response = self.llm_processor.query_llm(prompt)
-                parsed = self._loads_json_object(llm_response)
-                if parsed and isinstance(parsed, dict) and parsed.get("threat_detected"):
-                    llm_alert = Alert(
-                        frame_id=frame['frame_id'],
-                        alert_type=parsed.get("alert_type", "suspicious_activity"),
-                        severity=parsed.get("severity", "MEDIUM"),
-                        threat_score=parsed.get("threat_score", 5),
-                        message=parsed.get("message", "LLM Alert: suspicious activity detected"),
-                        timestamp=frame['timestamp'],
-                        location=frame['location']
-                    )
-                    alerts.append(llm_alert)
-                    llm_detected_threat = True
-            except Exception as e:
-                print(f"⚠ LLM threat analysis failed: {e}")
-
-        # Fallback to direct VLM or rule-based checks if LLM is not loaded or did not detect a threat
-        if not llm_detected_threat:
-            vlm_detected_threat = False
-            if self.vlm_processor is not None:
-                try:
-                    vlm_threat = self.vlm_processor.assess_security_threat(frame)
-                    if vlm_threat and vlm_threat.get("threat_detected"):
-                        vlm_alert = Alert(
-                            frame_id=frame['frame_id'],
-                            alert_type=vlm_threat.get("alert_type", "suspicious_activity"),
-                            severity=vlm_threat.get("severity", "MEDIUM"),
-                            threat_score=vlm_threat.get("threat_score", 5),
-                            message=vlm_threat.get("message", "VLM detected suspicious activity"),
-                            timestamp=frame['timestamp'],
-                            location=frame['location']
-                        )
-                        alerts.append(vlm_alert)
-                        vlm_detected_threat = True
-                except Exception as e:
-                    print(f"⚠ Direct VLM threat assessment failed: {e}")
-
-            if not vlm_detected_threat:
-                rule_alerts = self._check_rules(frame)
-                alerts.extend(rule_alerts)
-        
-        # Apply LLM-enhanced contextual checks (if previous frames provided)
+        # --- Secondary layer: contextual pattern checks ---
         if previous_frames:
             context_alerts = self._check_context(frame, previous_frames)
             alerts.extend(context_alerts)
-        
+
+        # --- Optional: LLM enriches message text on confirmed rule hits ---
+        if alerts and self.llm_processor is not None and getattr(self.llm_processor, "llm", None) is not None:
+            for alert in alerts:
+                try:
+                    enrich_prompt = (
+                        f"<|im_start|>system\n"
+                        f"You are a drone security analyst. Write a single clear, factual alert message "
+                        f"(1-2 sentences, no speculation) for the following confirmed security event.<|im_end|>\n"
+                        f"<|im_start|>user\n"
+                        f"Alert type: {alert.alert_type}\n"
+                        f"Location: {alert.location}\n"
+                        f"Timestamp: {alert.timestamp}\n"
+                        f"VLM description: {frame.get('description', '')}\n"
+                        f"Detected objects: {', '.join(frame.get('objects', []))}\n"
+                        f"Activity: {frame.get('activity_type', '')}\n"
+                        f"Write only the alert message text.<|im_end|>\n"
+                        f"<|im_start|>assistant\n"
+                    )
+                    enriched = self.llm_processor.query_llm(enrich_prompt).strip()
+                    if enriched and len(enriched) > 10:
+                        alert.message = enriched
+                except Exception as e:
+                    pass  # Keep original rule-generated message on failure
+
         # Store alerts
         self.alerts.extend(alerts)
-        
+
         return alerts
 
     def _check_rules(self, frame: Dict[str, Any]) -> List[Alert]:
         """
-        Rule-based alerting layer with dynamic VLM & Embeddings similarity.
-        Triggers dynamically or on fallback hard conditions.
+        LLM-driven alert evaluation.
+
+        Qwen2.5 receives the frame's timestamp, location, and BLIP-2 description
+        and decides whether a security alert is warranted.  The LLM is the sole
+        decision maker — no keyword lists, no hard-coded rules.
+
+        Falls back to embedding-similarity screening only when the LLM is not loaded.
         """
         alerts = []
         timestamp = frame['timestamp']
-        location = frame['location']
-        hour = self._get_frame_hour(timestamp)
+        location  = frame['location']
+        hour      = self._get_frame_hour(timestamp)
         description = frame.get('description', '')
-        activity_type = frame.get('activity_type', 'unknown')
-        
-        # Define semantic descriptions of security concerns
-        alert_conditions = {
-            "loitering_midnight": {
-                "phrase": "person standing loitering hanging around suspicious late night midnight empty street",
-                "severity": self.config.loitering_severity,
-                "threat_score": self.config.loitering_threat_score,
-                "message_template": "Person loitering detected near {location} (late hours)",
-                "time_required": True
-            },
-            "perimeter_breach": {
-                "phrase": "person crossing fence perimeter breach climbing wall entering restricted gate zone",
-                "severity": self.config.perimeter_severity,
-                "threat_score": self.config.perimeter_threat_score,
-                "message_template": "Security breach or restricted zone entry detected at {location}",
-                "time_required": False
-            },
-            "night_vehicle": {
-                "phrase": "vehicle driving entering gate car truck moving night off-hours restricted time",
-                "severity": self.config.night_vehicle_severity,
-                "threat_score": self.config.night_vehicle_threat_score,
-                "message_template": "Off-hours vehicle activity detected at {location}",
-                "time_required": True
-            }
-        }
-        
-        # Try dynamic embedding similarity
+
+        # --- Primary path: Qwen decides ---
+        if self.llm_processor is not None and getattr(self.llm_processor, "llm", None) is not None:
+            time_of_day = "night (off-hours)" if hour in (23, 0, 1, 2, 3, 4, 5, 6) else f"daytime (hour {hour})"
+
+            prompt = (
+                f"<|im_start|>system\n"
+                f"You are a conservative drone security alert system. "
+                f"Analyze the scene and decide if a security alert is needed. "
+                f"Be strict: normal daytime activity (vehicles, people going about their day, "
+                f"buildings, roads, fields) does NOT warrant an alert. "
+                f"Only flag genuine threats: a person loitering at night, a perimeter breach, "
+                f"or a suspicious vehicle during off-hours.\n"
+                f"Return ONLY valid JSON. If no threat: {{\"alert\": false}}\n"
+                f"If threat: {{\"alert\": true, \"alert_type\": \"loitering_midnight|perimeter_breach|night_vehicle\", "
+                f"\"severity\": \"LOW|MEDIUM|HIGH|CRITICAL\", \"threat_score\": 1-10, "
+                f"\"message\": \"one sentence factual description of the threat\"}}<|im_end|>\n"
+                f"<|im_start|>user\n"
+                f"Time: {time_of_day}\n"
+                f"Location: {location}\n"
+                f"Scene (from drone camera): {description}\n"
+                f"<|im_end|>\n"
+                f"<|im_start|>assistant\n"
+            )
+
+            try:
+                response = self.llm_processor.query_llm(prompt)
+                parsed = self._loads_json_object(response)
+                if parsed and isinstance(parsed, dict) and parsed.get("alert"):
+                    alerts.append(Alert(
+                        frame_id=frame['frame_id'],
+                        alert_type=parsed.get("alert_type", "suspicious_activity"),
+                        severity=parsed.get("severity", "MEDIUM"),
+                        threat_score=int(parsed.get("threat_score", 5)),
+                        message=parsed.get("message", "Suspicious activity detected"),
+                        timestamp=timestamp,
+                        location=location,
+                    ))
+            except Exception as e:
+                print(f"⚠ LLM alert evaluation failed: {e}")
+            # If LLM loaded but returned no alert (or failed) → no false positive
+            return alerts
+
+        # --- Fallback: embedding similarity (no LLM available) ---
         if self.embed_model is not None and util is not None and description:
             try:
+                alert_conditions = {
+                    "loitering_midnight": {
+                        "phrase": "a person is standing or loitering near a building or gate at night",
+                        "severity": self.config.loitering_severity,
+                        "threat_score": self.config.loitering_threat_score,
+                        "time_gate": lambda h: h in self.config.loitering_hours,
+                    },
+                    "perimeter_breach": {
+                        "phrase": "a person or vehicle is near a fence, gate, wall, or restricted perimeter area",
+                        "severity": self.config.perimeter_severity,
+                        "threat_score": self.config.perimeter_threat_score,
+                        "time_gate": lambda h: True,
+                    },
+                    "night_vehicle": {
+                        "phrase": "a car or truck is moving or parked near a gate or road at night",
+                        "severity": self.config.night_vehicle_severity,
+                        "threat_score": self.config.night_vehicle_threat_score,
+                        "time_gate": lambda h: h in self.config.night_vehicle_hours,
+                    },
+                }
                 desc_emb = self.embed_model.encode(description, convert_to_tensor=True)
                 for alert_type, cond in alert_conditions.items():
+                    if not cond["time_gate"](hour):
+                        continue
                     cond_emb = self.embed_model.encode(cond["phrase"], convert_to_tensor=True)
                     similarity = float(util.cos_sim(desc_emb, cond_emb)[0][0])
-                    
-                    # Threshold: 0.38 represents a strong semantic similarity match
-                    if similarity > 0.38:
-                        if cond["time_required"]:
-                            is_late_night = hour in self.config.loitering_hours or hour in self.config.night_vehicle_hours
-                            if not is_late_night:
-                                continue
-                        
-                        alert = Alert(
+                    if similarity > 0.50:
+                        alerts.append(Alert(
                             frame_id=frame['frame_id'],
                             alert_type=alert_type,
                             severity=cond["severity"],
                             threat_score=cond["threat_score"],
-                            message=cond["message_template"].format(location=location) + f" [similarity: {similarity:.2f}]",
+                            message=f"{alert_type.replace('_', ' ').title()} detected at {location} [similarity: {similarity:.2f}]",
                             timestamp=timestamp,
-                            location=location
-                        )
-                        alerts.append(alert)
-                
-                # If we matched semantic alerts, return them
-                if alerts:
-                    return alerts
+                            location=location,
+                        ))
             except Exception as e:
-                print(f"⚠ Dynamic embedding check failed, falling back: {e}")
-        
-        # FALLBACK: Rule-based static checking
-        # RULE 1: Loitering at midnight
-        if hour in self.config.loitering_hours:
-            if activity_type == "person":
-                time_phrase = "at midnight" if hour == 0 else "during late-night hours"
-                alert = Alert(
-                    frame_id=frame['frame_id'],
-                    alert_type="loitering_midnight",
-                    severity=self.config.loitering_severity,
-                    threat_score=self.config.loitering_threat_score,
-                    message=f"{self.config.loitering_severity}: Person loitering near {location} {time_phrase}. Threat score {self.config.loitering_threat_score}/10.",
-                    timestamp=timestamp,
-                    location=location
-                )
-                alerts.append(alert)
-        
-        # RULE 2: Suspicious activity near perimeter, fence, gate, or restricted zones
-        suspicious_keywords = ["perimeter", "fence", "gate", "restricted"]
-        if any(keyword in location.lower() for keyword in suspicious_keywords):
-            if activity_type in ["person", "vehicle", "vehicle+person"]:
-                alert = Alert(
-                    frame_id=frame['frame_id'],
-                    alert_type="perimeter_breach",
-                    severity=self.config.perimeter_severity,
-                    threat_score=self.config.perimeter_threat_score,
-                    message=f"Activity ({activity_type}) detected near {location} (restricted zone/perimeter security concern)",
-                    timestamp=timestamp,
-                    location=location
-                )
-                alerts.append(alert)
-        
-        # RULE 3: Unusual nighttime vehicle activity (vehicle at odd hour)
-        if hour in self.config.night_vehicle_hours:
-            if activity_type in ["vehicle", "vehicle+person"]:
-                alert = Alert(
-                    frame_id=frame['frame_id'],
-                    alert_type="night_vehicle",
-                    severity=self.config.night_vehicle_severity,
-                    threat_score=self.config.night_vehicle_threat_score,
-                    message=f"Vehicle activity at {location} during off-hours ({timestamp})",
-                    timestamp=timestamp,
-                    location=location
-                )
-                alerts.append(alert)
-        
+                print(f"⚠ Embedding fallback failed: {e}")
+
         return alerts
 
+
+
     def _check_context(self, frame: Dict[str, Any], previous_frames: List[Dict[str, Any]]) -> List[Alert]:
+
         """
         LLM-enhanced contextual alerting.
         Detects patterns and anomalies in frame history.

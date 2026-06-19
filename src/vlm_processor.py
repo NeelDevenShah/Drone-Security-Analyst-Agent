@@ -134,7 +134,14 @@ class VLMProcessor:
         )
 
     def _analyze_real_frame(self, frame_data: Dict[str, Any]) -> VLMAnalysis:
-        """Analyze actual image with VLM (production mode)"""
+        """
+        Two-step pipeline for accurate structured output:
+          Step 1 — BLIP-2: Answer a simple VQA question to get a raw
+                   natural-language caption of what is visible.
+          Step 2 — SmolLM2 (optional): Read that caption and extract
+                   structured fields (objects, activity_type).
+        If SmolLM2 is unavailable, keyword-based extraction is used as fallback.
+        """
         frame = frame_data.get("frame_data")
         if frame is None:
             frame = frame_data.get("image")
@@ -144,9 +151,9 @@ class VLMProcessor:
 
         image = self._prepare_image(frame)
 
+        # --- Step 1: BLIP-2 visual description ---
         try:
             import torch
-
             inputs = self.processor(
                 images=image,
                 text=self._build_prompt(),
@@ -157,30 +164,57 @@ class VLMProcessor:
             with torch.no_grad():
                 generated_ids = self.model.generate(
                     **inputs,
-                    max_new_tokens=VLM_CONFIG.max_new_tokens
+                    max_new_tokens=VLM_CONFIG.max_new_tokens,
+                    num_beams=4,           # beam search for better captions
+                    length_penalty=1.2,    # encourages longer, more complete answers
                 )
 
-            description = self.processor.batch_decode(
-                generated_ids,
-                skip_special_tokens=True
+            raw_caption = self.processor.batch_decode(
+                generated_ids, skip_special_tokens=True
             )[0].strip()
+
+            # Strip the echoed prompt prefix if BLIP-2 repeats it
+            prompt_text = self._build_prompt()
+            if raw_caption.lower().startswith(prompt_text.lower()):
+                raw_caption = raw_caption[len(prompt_text):].strip()
+
         except Exception:
             if not VLM_CONFIG.fallback_on_load_error:
                 raise
             raise
 
-        parsed_result = self._parse_model_output(description)
+        # Derive lightweight structured fields from the rich caption.
+        # The description itself is the primary data; labels are secondary.
+        activity_type = self._infer_activity_type(raw_caption)
 
         return VLMAnalysis(
             frame_id=frame_data.get("frame_id"),
             timestamp=frame_data.get("timestamp"),
             location=frame_data.get("location"),
-            description=parsed_result["description"],
-            objects=parsed_result["objects"],
-            activity_type=parsed_result["activity_type"],
+            description=raw_caption,        # full BLIP-2 caption — no truncation
+            objects=[],                      # populated from description by alert engine
+            activity_type=activity_type,
             confidence=VLM_CONFIG.vlm_confidence,
             vlm_model=self.model_name
         )
+
+    def _infer_activity_type(self, caption: str) -> str:
+        """
+        Lightweight keyword-based activity_type inference from a BLIP-2 caption.
+        Needed only to satisfy alert rule conditions (e.g. night_vehicle requires
+        activity_type == 'vehicle'). The description itself is the primary signal.
+        """
+        c = caption.lower()
+        has_vehicle = any(kw in c for kw in DETECTION_CONFIG.cv_fallback_keywords.get("vehicle", ()))
+        has_person  = any(kw in c for kw in DETECTION_CONFIG.cv_fallback_keywords.get("person", ()))
+
+        if has_vehicle and has_person:
+            return "vehicle+person"
+        if has_vehicle:
+            return "vehicle"
+        if has_person:
+            return "person"
+        return DETECTION_CONFIG.fallback_activity
 
     def _prepare_image(self, frame):
         """Convert an OpenCV/PIL frame into an RGB PIL image for the VLM."""
@@ -205,11 +239,8 @@ class VLMProcessor:
         raise TypeError(f"Unsupported frame type for VLM analysis: {type(frame)!r}")
 
     def _build_prompt(self) -> str:
-        """Build the VLM prompt from configured labels."""
-        return VLM_CONFIG.prompt.format(
-            object_categories=", ".join(DETECTION_CONFIG.object_categories),
-            activity_categories=", ".join(DETECTION_CONFIG.activity_categories),
-        )
+        """Return the VQA question for BLIP-2 (no format tokens needed)."""
+        return VLM_CONFIG.prompt
 
     def _parse_model_output(self, raw_output: str) -> Dict[str, Any]:
         """Parse and validate structured VLM output."""

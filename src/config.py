@@ -101,12 +101,10 @@ class VLMConfig:
     enabled: bool = True
     model_name: str = "blip2"
     model_repo: str = "Salesforce/blip2-opt-2.7b"
-    prompt: str = (
-        "Analyze this drone security frame. Choose object labels only from {object_categories}. "
-        "Choose one activity_type only from {activity_categories}. "
-        "Return only JSON with keys: description, objects, activity_type."
-    )
-    max_new_tokens: int = 120
+    # Simple VQA-style question — BLIP-2 is a captioning/VQA model, not an
+    # instruction-follower. A short factual question gets the best raw output.
+    prompt: str = "Question: What vehicles, people, buildings, and objects are visible in this aerial security camera footage? Answer:"
+    max_new_tokens: int = 150
     use_cv_fallback: bool = True
     fallback_on_load_error: bool = False
     simulated_confidence: float = 0.95
@@ -119,7 +117,8 @@ class LLMConfig:
     """Language model defaults for Q&A."""
     enabled: bool = True
     model_name: str = "transformers"
-    model_repo: str = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+    model_repo: str = "Qwen/Qwen2.5-1.5B-Instruct"
+
     max_new_tokens: int = 256
     temperature: float = 0.1
 
