@@ -28,6 +28,9 @@ class PipelineConfig:
     context_frame_limit: int = 50
     progress_interval_frames: int = 10
     stop_join_timeout_seconds: float = 10.0
+    # Frame image storage
+    frames_dir: str = str(PROJECT_ROOT / "data" / "frames")
+    frame_save_interval: int = 30   # save 1 clean frame every N processed frames
 
 
 @dataclass(frozen=True)

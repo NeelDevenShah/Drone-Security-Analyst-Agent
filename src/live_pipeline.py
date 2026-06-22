@@ -74,7 +74,12 @@ class LiveSecurityAnalysisPipeline:
         self.frames_processed = 0
         self.alerts_generated = []
         self.frame_descriptions = []
-        
+        self.frame_image_paths: Dict[int, str] = {}  # frame_id → saved JPEG path
+
+        # Create frames directory for saved images
+        import os
+        os.makedirs(PIPELINE_CONFIG.frames_dir, exist_ok=True)
+
         # Processing thread
         self.process_thread = None
 
@@ -154,8 +159,26 @@ class LiveSecurityAnalysisPipeline:
                 
                 # 4. Analyze with agent (with context)
                 frame_alerts = self.agent.alert_engine.analyze_frame(frame_data, previous_frames)
-                
-                # 5. Store alerts
+
+                # 5. Save frame image to disk
+                #    - Always save if the frame triggered an alert
+                #    - Sample clean frames every frame_save_interval processed frames
+                should_save = bool(frame_alerts) or (
+                    self.frames_processed % PIPELINE_CONFIG.frame_save_interval == 0
+                )
+                if should_save:
+                    try:
+                        import cv2
+                        import os
+                        tag = "alert" if frame_alerts else "sample"
+                        img_filename = f"frame_{frame_desc.frame_id:06d}_{tag}.jpg"
+                        img_path = os.path.join(PIPELINE_CONFIG.frames_dir, img_filename)
+                        cv2.imwrite(img_path, stream_frame.frame_data)
+                        self.frame_image_paths[frame_desc.frame_id] = img_path
+                    except Exception as e:
+                        print(f"⚠ Could not save frame image: {e}")
+
+                # 6. Store alerts
                 for alert in frame_alerts:
                     self.indexer.store_alert(
                         frame_id=alert.frame_id,
@@ -255,29 +278,88 @@ class LiveSecurityAnalysisPipeline:
         print("\n" + "=" * 70)
 
     def export_results(self, output_file: str = PIPELINE_CONFIG.export_path):
-        """Export results to JSON"""
+        """Export full end-to-end results to JSON.
+
+        Each frame record contains:
+          - frame_id, timestamp, location
+          - description (full BLIP-2 caption)
+          - objects, activity_type, confidence, processing_time_ms
+          - telemetry (GPS, altitude, etc.)
+          - alerts: list of every alert triggered on this frame
+        """
         import json
-        
+
+        # Build a frame_id → frame_data lookup so we can attach telemetry/location
+        frame_data_lookup: Dict[int, Dict[str, Any]] = {}
+        for fd in self.frame_descriptions:
+            frame_data_lookup[fd.frame_id] = {
+                "frame_id": fd.frame_id,
+                "timestamp": fd.timestamp,
+                "description": fd.description,
+                "objects": fd.objects,
+                "activity_type": fd.activity_type,
+                "confidence": round(fd.confidence, 4),
+                "processing_time_ms": round(fd.processing_time_ms, 2),
+                "location": PIPELINE_CONFIG.default_location,
+                "telemetry": None,
+                "image_path": self.frame_image_paths.get(fd.frame_id),  # None if not saved
+                "alerts": [],
+            }
+
+        # Attach telemetry from stream frames (stored in frame_descriptions indirectly)
+        # We stored full frame_data dicts in previous_frames inside _process_loop;
+        # pull telemetry back from the indexer instead (it stores it in the DB).
+        try:
+            with self.indexer.db_lock:
+                rows = self.indexer.conn.execute(
+                    "SELECT frame_id, location, telemetry FROM frames"
+                ).fetchall()
+            for row in rows:
+                fid = row["frame_id"]
+                if fid in frame_data_lookup:
+                    frame_data_lookup[fid]["location"] = row["location"] or PIPELINE_CONFIG.default_location
+                    raw_tel = row["telemetry"]
+                    if raw_tel:
+                        try:
+                            frame_data_lookup[fid]["telemetry"] = json.loads(raw_tel) if isinstance(raw_tel, str) else raw_tel
+                        except Exception:
+                            frame_data_lookup[fid]["telemetry"] = raw_tel
+        except Exception as e:
+            print(f"⚠ Could not load telemetry from DB for export: {e}")
+
+        # Attach alerts to their parent frames
+        all_alerts_list = []
+        for alert in self.alerts_generated:
+            alert_record = {
+                "alert_type": alert.alert_type,
+                "severity": alert.severity,
+                "threat_score": alert.threat_score,
+                "timestamp": alert.timestamp,
+                "location": alert.location,
+                "message": alert.message,
+                "frame_image": self.frame_image_paths.get(alert.frame_id),  # direct link to saved image
+            }
+            all_alerts_list.append(alert_record)
+            fid = alert.frame_id
+            if fid in frame_data_lookup:
+                frame_data_lookup[fid]["alerts"].append(alert_record)
+
+        # Sort frames by frame_id for readability
+        frames_list = sorted(frame_data_lookup.values(), key=lambda x: x["frame_id"])
+
         results = {
             "summary": self.get_summary(),
-            "frames": [asdict(d) for d in self.frame_descriptions],
-            "alerts": [
-                {
-                    "type": a.alert_type,
-                    "severity": a.severity,
-                    "threat_score": a.threat_score,
-                    "timestamp": a.timestamp,
-                    "location": a.location,
-                    "message": a.message
-                }
-                for a in self.alerts_generated
-            ]
+            "frames": frames_list,
+            "all_alerts": all_alerts_list,
         }
-        
-        with open(output_file, 'w') as f:
-            json.dump(results, f, indent=2)
-        
+
+        with open(output_file, "w") as f:
+            json.dump(results, f, indent=2, default=str)
+
         print(f"\n✓ Results exported to {output_file}")
+        print(f"  {len(frames_list)} frames, {len(all_alerts_list)} alerts")
+
+
 
 
 def main():
