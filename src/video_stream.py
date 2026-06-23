@@ -41,7 +41,7 @@ class VideoStreamProcessor:
         """Initialize video stream processor"""
         self.source = source
         self.callback = callback
-        self.fps_limit = fps_limit
+        self.fps_limit: float = float(fps_limit)
         self.loop = loop
         self.frame_queue = queue.Queue(maxsize=STREAM_CONFIG.queue_size)
         self.is_running = False
@@ -104,35 +104,46 @@ class VideoStreamProcessor:
         print("✓ Video stream processing stopped")
 
     def _process_stream(self):
-        """Process video stream frames"""
-        frame_delay = 1.0 / self.fps_limit if self.fps_limit > 0 else 0
-        
+        """
+        Read frames from the video by seeking, not by decoding every frame.
+        Calculates how many source frames to skip per step so that the
+        effective analysis rate matches fps_limit exactly.
+        """
+        # How many source frames to advance per analysis step
+        source_fps = self.fps if self.fps > 0 else 30.0
+        frames_per_step = max(1, int(round(source_fps / self.fps_limit))) if self.fps_limit > 0 else 1
+        current_pos = 0  # current position in source frames
+
         while self.is_running:
+            # Seek to the desired position (skips decoding intermediate frames)
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
             ret, frame = self.cap.read()
-            
+
             if not ret:
                 if self.loop and self.total_frames > 0:
+                    current_pos = 0
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     continue
-
                 self.is_running = False
                 break
-            
+
             self.frame_count += 1
-            
+            current_pos += frames_per_step
+
             stream_frame = StreamFrame(
                 frame_id=self.frame_count,
                 timestamp=datetime.now().isoformat(),
                 frame_data=frame,
-                fps=self.fps,
+                fps=self.fps_limit,
                 resolution=(self.width, self.height),
                 metadata={
                     "source": self.source,
                     "total_frames": self.total_frames,
-                    "current_frame": int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+                    "source_frame_pos": current_pos,
+                    "frames_per_step": frames_per_step,
                 }
             )
-            
+
             if self.loop:
                 try:
                     self.frame_queue.put(stream_frame, block=False)
@@ -149,15 +160,13 @@ class VideoStreamProcessor:
                         break
                     except queue.Full:
                         continue
-            
+
             if self.callback:
                 try:
                     self.callback(stream_frame)
                 except Exception as e:
                     print(f"✗ Callback error: {e}")
-            
-            if frame_delay > 0:
-                time.sleep(frame_delay)
+
 
     def get_frame(self, timeout: float = 1.0) -> Optional[StreamFrame]:
         """Get next frame from queue"""

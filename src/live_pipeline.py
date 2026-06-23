@@ -35,7 +35,7 @@ class LiveSecurityAnalysisPipeline:
         video_source: str = PIPELINE_CONFIG.video_source,
         db_path: str = PIPELINE_CONFIG.db_path,
         vlm_processor=None,
-        fps_limit: int = STREAM_CONFIG.fps_limit,
+        fps_limit: float = STREAM_CONFIG.fps_limit,
         loop: bool = STREAM_CONFIG.loop,
         use_vlm: bool = VLM_CONFIG.enabled
     ):
@@ -97,10 +97,12 @@ class LiveSecurityAnalysisPipeline:
         print("🚁 LIVE DRONE SECURITY ANALYSIS PIPELINE STARTED")
         print("=" * 70)
         print(f"Video Source: {self.video_source}")
-        print(f"FPS Limit: {self.fps_limit}")
+        interval_s = round(1.0 / self.fps_limit, 2) if self.fps_limit > 0 else "∞"
+        print(f"Analysis Rate: {self.fps_limit} FPS  (1 frame every {interval_s}s)")
         print(f"Loop Video: {'yes' if self.loop else 'no'}")
         print(f"VLM Enabled: {'yes' if self.use_vlm else 'no'}")
         print(f"Database: {self.indexer.db_path}")
+        print(f"Frame images: {PIPELINE_CONFIG.frames_dir}")
         print("=" * 70)
 
     def stop(self):
@@ -375,9 +377,9 @@ def main():
     )
     parser.add_argument(
         "--fps",
-        type=int,
+        type=float,
         default=STREAM_CONFIG.fps_limit,
-        help=f"Frame rate limit (default: {STREAM_CONFIG.fps_limit})"
+        help=f"Frames per second to analyse (default: {STREAM_CONFIG.fps_limit}, e.g. 0.5 = 1 frame every 2s)"
     )
     parser.add_argument(
         "--db",

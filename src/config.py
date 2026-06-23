@@ -11,10 +11,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 @dataclass(frozen=True)
 class StreamConfig:
     """Video reader defaults."""
-    fps_limit: int = 10
+    fps_limit: float = 0.5          # frames per second to process (0.5 = 1 frame every 2s)
     loop: bool = False
-    queue_size: int = 10
-    frame_timeout_seconds: float = 1.0
+    queue_size: int = 4
+    frame_timeout_seconds: float = 3.0
     stop_join_timeout_seconds: float = 5.0
 
 
@@ -30,7 +30,7 @@ class PipelineConfig:
     stop_join_timeout_seconds: float = 10.0
     # Frame image storage
     frames_dir: str = str(PROJECT_ROOT / "data" / "frames")
-    frame_save_interval: int = 30   # save 1 clean frame every N processed frames
+    frame_save_interval: int = 1    # at 0.5 FPS every frame is already sparse; save all
 
 
 @dataclass(frozen=True)
