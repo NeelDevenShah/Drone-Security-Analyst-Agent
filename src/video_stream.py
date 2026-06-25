@@ -105,30 +105,37 @@ class VideoStreamProcessor:
 
     def _process_stream(self):
         """
-        Read frames from the video by seeking, not by decoding every frame.
-        Calculates how many source frames to skip per step so that the
-        effective analysis rate matches fps_limit exactly.
+        Read frames from the video efficiently by using grab() to skip
+        intermediate frames without full decoding, then retrieve() only
+        for the frame we actually want to analyse.
+
+        This avoids the CAP_PROP_POS_FRAMES seek+read race condition that
+        occurs with H.264/MPEG codecs where a seek lands on the nearest
+        keyframe and the immediate read() returns decoder-garbage (static
+        noise) instead of the correct pixel data.
         """
-        # How many source frames to advance per analysis step
         source_fps = self.fps if self.fps > 0 else 30.0
         frames_per_step = max(1, int(round(source_fps / self.fps_limit))) if self.fps_limit > 0 else 1
-        current_pos = 0  # current position in source frames
 
         while self.is_running:
-            # Seek to the desired position (skips decoding intermediate frames)
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)
-            ret, frame = self.cap.read()
+            # Grab-and-skip: use grab() (no decode) to advance frames_per_step-1
+            # positions, then retrieve() the final frame (full decode, correct pixels).
+            skip_count = frames_per_step - 1
+            for _ in range(skip_count):
+                if not self.cap.grab():
+                    break  # end of stream hit during skip
+
+            ret, frame = self.cap.read()  # decode only this frame
 
             if not ret:
                 if self.loop and self.total_frames > 0:
-                    current_pos = 0
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     continue
                 self.is_running = False
                 break
 
             self.frame_count += 1
-            current_pos += frames_per_step
+            current_pos = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
 
             stream_frame = StreamFrame(
                 frame_id=self.frame_count,
