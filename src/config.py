@@ -102,12 +102,17 @@ class DetectionConfig:
 class VLMConfig:
     """Vision language model defaults."""
     enabled: bool = True
-    model_name: str = "blip2"
-    model_repo: str = "Salesforce/blip2-opt-2.7b"
-    # Simple VQA-style question — BLIP-2 is a captioning/VQA model, not an
-    # instruction-follower. A short factual question gets the best raw output.
-    prompt: str = "Question: What vehicles, people, buildings, and objects are visible in this aerial security camera footage? Answer:"
-    max_new_tokens: int = 150
+    model_name: str = "qwen2-vl"
+    model_repo: str = "Qwen/Qwen2-VL-2B-Instruct"
+    # Prompt for Qwen2-VL requesting structured JSON output
+    prompt: str = (
+        "Analyze this drone security camera image. Provide a JSON object with the following keys:\n"
+        "1. \"description\": A clear, concise natural language description of the scene from a security perspective (focusing on people, vehicles, perimeter areas, and their activities).\n"
+        "2. \"objects\": A list containing any of these specific categories that are present: \"vehicle\", \"person\", \"building\", \"gate\", \"road\", \"nature\".\n"
+        "3. \"activity_type\": A single category representing the main activity: \"vehicle+person\" (if both are interacting), \"vehicle\" (if only vehicles), \"person\" (if only people), or \"empty\".\n"
+        "Return ONLY the raw JSON object, no Markdown blocks or extra text."
+    )
+    max_new_tokens: int = 256
     use_cv_fallback: bool = True
     fallback_on_load_error: bool = False
     simulated_confidence: float = 0.95

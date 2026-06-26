@@ -91,6 +91,39 @@ class VLMProcessor:
                 print("⚠ Using mock VLM processor.")
                 self.processor = None
                 self.model = None
+        elif self.model_name == "qwen2-vl":
+            try:
+                from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+                import torch
+                
+                self.device = "cuda" if torch.cuda.is_available() else "cpu"
+                print(f"Using device: {self.device}")
+                
+                self.processor = AutoProcessor.from_pretrained(VLM_CONFIG.model_repo)
+                self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+                    VLM_CONFIG.model_repo,
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                    device_map="auto" if self.device == "cuda" else None
+                )
+                self.model.eval()
+                print("✓ Qwen2-VL model loaded successfully")
+            except ImportError:
+                if not VLM_CONFIG.fallback_on_load_error:
+                    raise RuntimeError(
+                        "Failed to initialize qwen2-vl VLM: transformers is not installed"
+                    )
+
+                print("⚠ Transformers not installed. Using mock VLM processor.")
+                self.processor = None
+                self.model = None
+            except Exception as e:
+                if not VLM_CONFIG.fallback_on_load_error:
+                    raise
+
+                print(f"⚠ Failed to load {self.model_name} model: {e}")
+                print("⚠ Using mock VLM processor.")
+                self.processor = None
+                self.model = None
         else:
             if not VLM_CONFIG.fallback_on_load_error:
                 raise ValueError(f"VLM model {self.model_name!r} is not configured")
@@ -135,12 +168,9 @@ class VLMProcessor:
 
     def _analyze_real_frame(self, frame_data: Dict[str, Any]) -> VLMAnalysis:
         """
-        Two-step pipeline for accurate structured output:
-          Step 1 — BLIP-2: Answer a simple VQA question to get a raw
-                   natural-language caption of what is visible.
-          Step 2 — SmolLM2 (optional): Read that caption and extract
-                   structured fields (objects, activity_type).
-        If SmolLM2 is unavailable, keyword-based extraction is used as fallback.
+        Processes actual image using the configured VLM (Qwen2-VL or BLIP-2).
+        For Qwen2-VL: Requests structured JSON directly.
+        For BLIP-2: Queries description and infers structured fields via keywords.
         """
         frame = frame_data.get("frame_data")
         if frame is None:
@@ -151,48 +181,103 @@ class VLMProcessor:
 
         image = self._prepare_image(frame)
 
-        # --- Step 1: BLIP-2 visual description ---
+        try:
+            from detection import extract_objects_from_keywords
+        except ImportError:
+            from .detection import extract_objects_from_keywords
+
+        description = ""
+        objects = []
+        activity_type = "empty"
+
         try:
             import torch
-            inputs = self.processor(
-                images=image,
-                text=self._build_prompt(),
-                return_tensors="pt"
-            )
-            inputs = {key: value.to(self.device) for key, value in inputs.items()}
-
-            with torch.no_grad():
-                generated_ids = self.model.generate(
-                    **inputs,
-                    max_new_tokens=VLM_CONFIG.max_new_tokens,
-                    num_beams=4,           # beam search for better captions
-                    length_penalty=1.2,    # encourages longer, more complete answers
+            
+            if self.model_name == "qwen2-vl":
+                conversation = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image"},
+                            {"type": "text", "text": self._build_prompt()},
+                        ],
+                    }
+                ]
+                text_prompt = self.processor.apply_chat_template(conversation, add_generation_prompt=True)
+                inputs = self.processor(
+                    text=[text_prompt],
+                    images=[image],
+                    padding=True,
+                    return_tensors="pt"
                 )
+                inputs = {key: value.to(self.device) for key, value in inputs.items()}
+                
+                with torch.no_grad():
+                    generated_ids = self.model.generate(
+                        **inputs,
+                        max_new_tokens=VLM_CONFIG.max_new_tokens,
+                    )
+                
+                generated_ids_trimmed = [
+                    out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
+                ]
+                raw_output = self.processor.batch_decode(
+                    generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                )[0].strip()
+                
+                parsed = self._loads_json_object(raw_output)
+                if parsed and isinstance(parsed, dict):
+                    description = parsed.get("description", "No description provided")
+                    objects = parsed.get("objects", [])
+                    if isinstance(objects, str):
+                        objects = [objects]
+                    activity_type = parsed.get("activity_type", "empty")
+                else:
+                    description = raw_output
+                    activity_type = self._infer_activity_type(description)
+                    objects = extract_objects_from_keywords(description)
+                    
+            else:  # blip2 fallback
+                inputs = self.processor(
+                    images=image,
+                    text=self._build_prompt(),
+                    return_tensors="pt"
+                )
+                inputs = {key: value.to(self.device) for key, value in inputs.items()}
 
-            raw_caption = self.processor.batch_decode(
-                generated_ids, skip_special_tokens=True
-            )[0].strip()
+                with torch.no_grad():
+                    generated_ids = self.model.generate(
+                        **inputs,
+                        max_new_tokens=VLM_CONFIG.max_new_tokens,
+                        num_beams=4,           # beam search for better captions
+                        length_penalty=1.2,    # encourages longer, more complete answers
+                    )
 
-            # Strip the echoed prompt prefix if BLIP-2 repeats it
-            prompt_text = self._build_prompt()
-            if raw_caption.lower().startswith(prompt_text.lower()):
-                raw_caption = raw_caption[len(prompt_text):].strip()
+                raw_caption = self.processor.batch_decode(
+                    generated_ids, skip_special_tokens=True
+                )[0].strip()
 
-        except Exception:
+                # Strip the echoed prompt prefix if BLIP-2 repeats it
+                prompt_text = self._build_prompt()
+                if raw_caption.lower().startswith(prompt_text.lower()):
+                    raw_caption = raw_caption[len(prompt_text):].strip()
+                    
+                description = raw_caption
+                activity_type = self._infer_activity_type(description)
+                objects = extract_objects_from_keywords(description)
+
+        except Exception as e:
+            print(f"⚠ Real VLM analysis failed: {e}")
             if not VLM_CONFIG.fallback_on_load_error:
                 raise
             raise
-
-        # Derive lightweight structured fields from the rich caption.
-        # The description itself is the primary data; labels are secondary.
-        activity_type = self._infer_activity_type(raw_caption)
 
         return VLMAnalysis(
             frame_id=frame_data.get("frame_id"),
             timestamp=frame_data.get("timestamp"),
             location=frame_data.get("location"),
-            description=raw_caption,        # full BLIP-2 caption — no truncation
-            objects=[],                      # populated from description by alert engine
+            description=description,
+            objects=objects,
             activity_type=activity_type,
             confidence=VLM_CONFIG.vlm_confidence,
             vlm_model=self.model_name
