@@ -196,6 +196,12 @@ class VLMProcessor:
             if self.model_name == "qwen2-vl":
                 conversation = [
                     {
+                        "role": "system",
+                        "content": [
+                            {"type": "text", "text": "You are a precise drone security camera assistant. You must output ONLY a valid JSON object. Do not repeat items. Be concise."}
+                        ]
+                    },
+                    {
                         "role": "user",
                         "content": [
                             {"type": "image"},
@@ -216,6 +222,8 @@ class VLMProcessor:
                     generated_ids = self.model.generate(
                         **inputs,
                         max_new_tokens=VLM_CONFIG.max_new_tokens,
+                        do_sample=False,
+                        repetition_penalty=1.2,
                     )
                 
                 generated_ids_trimmed = [
@@ -225,15 +233,24 @@ class VLMProcessor:
                     generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
                 )[0].strip()
                 
-                parsed = self._loads_json_object(raw_output)
+                # Robust JSON parsing and stripping of markdown JSON tags
+                clean_output = raw_output
+                for marker in ["```json", "```"]:
+                    if clean_output.startswith(marker):
+                        clean_output = clean_output[len(marker):].strip()
+                    if clean_output.endswith(marker):
+                        clean_output = clean_output[:-len(marker)].strip()
+                
+                parsed = self._loads_json_object(clean_output)
                 if parsed and isinstance(parsed, dict):
-                    description = parsed.get("description", "No description provided")
-                    objects = parsed.get("objects", [])
-                    if isinstance(objects, str):
-                        objects = [objects]
-                    activity_type = parsed.get("activity_type", "empty")
+                    # Use normalizer to get allowed objects and activity type
+                    normalized = self._parse_model_output(clean_output)
+                    description = normalized["description"]
+                    objects = normalized["objects"]
+                    activity_type = normalized["activity_type"]
                 else:
-                    description = raw_output
+                    # If full JSON parsing still fails, parse whatever text we got
+                    description = clean_output
                     activity_type = self._infer_activity_type(description)
                     objects = extract_objects_from_keywords(description)
                     
