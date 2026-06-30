@@ -73,10 +73,10 @@ def main():
     print("=" * 70)
     
     questions = [
-        "How many vehicles detected?",
-        "What about the blue truck?",
-        "What objects were in the video?",
-        "How many people detected?"
+        "Show all vehicle events today",
+        "Was anyone near the main gate at midnight?",
+        "Which objects appeared more than once?",
+        "How many vehicles detected?"
     ]
     
     for q in questions:
