@@ -14,21 +14,56 @@ from alert_engine import AlertEngine
 from agent import SecurityAnalystAgent
 
 
-def initialize_session_state():
-    """Initialize Streamlit session state"""
-    if 'agent' not in st.session_state:
-        st.session_state.agent = SecurityAnalystAgent()
-    if 'frames_processed' not in st.session_state:
-        st.session_state.frames_processed = False
-
-
 def load_simulated_data():
-    """Load simulated frames from JSON"""
+    """Load simulated frames from JSON, generating them if they don't exist"""
     frames_file = Path("/home/neel/Desktop/flytbaseAI/data/simulated_frames.json")
+    if not frames_file.exists():
+        try:
+            from data_simulator import DataSimulator
+            simulator = DataSimulator()
+            simulator.generate_realistic_scenario()
+            frames_file.parent.mkdir(parents=True, exist_ok=True)
+            simulator.save_to_file(str(frames_file))
+        except Exception as e:
+            st.error(f"Failed to generate simulated frames: {e}")
+            
     if frames_file.exists():
         with open(frames_file) as f:
             return json.load(f)
     return []
+
+
+def initialize_session_state():
+    """Initialize Streamlit session state and auto-process frames if not done yet"""
+    if 'agent' not in st.session_state:
+        st.session_state.agent = SecurityAnalystAgent()
+        
+    if 'frames_processed' not in st.session_state or not st.session_state.frames_processed:
+        frames = load_simulated_data()
+        if frames:
+            db_frames_count = st.session_state.agent.indexer.get_frame_count()
+            if db_frames_count > 0:
+                # Database already has data; load directly from indexer
+                st.session_state.results = {
+                    "frames_processed": db_frames_count,
+                    "alerts_generated": [
+                        {
+                            "timestamp": a["timestamp"],
+                            "location": a["location"],
+                            "severity": a["severity"],
+                            "message": a["message"]
+                        }
+                        for a in st.session_state.agent.indexer.get_all_alerts()
+                    ],
+                    "patterns_detected": [],
+                    "summary": st.session_state.agent.get_shift_summary()
+                }
+                st.session_state.frames_processed = True
+            else:
+                # Ingest and process simulated frames
+                results = st.session_state.agent.process_frames(frames)
+                st.session_state.results = results
+                st.session_state.frames_processed = True
 
 
 def main():

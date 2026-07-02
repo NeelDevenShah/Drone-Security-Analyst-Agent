@@ -198,7 +198,7 @@ class VLMProcessor:
                     {
                         "role": "system",
                         "content": [
-                            {"type": "text", "text": "You are a precise drone security camera assistant. You must output ONLY a valid JSON object. Do not repeat items. Be concise."}
+                            {"type": "text", "text": "You are a precise drone security camera assistant. You must analyze images carefully, even under dark, shadowed, or low-light conditions, to detect objects of interest. Output ONLY a valid JSON object. Do not repeat items. Be concise."}
                         ]
                     },
                     {
@@ -319,26 +319,47 @@ class VLMProcessor:
         return DETECTION_CONFIG.fallback_activity
 
     def _prepare_image(self, frame):
-        """Convert an OpenCV/PIL frame into an RGB PIL image for the VLM."""
+        """Convert an OpenCV/PIL frame into an RGB PIL image for the VLM, with brightness/contrast enhancement."""
         from PIL import Image
-
-        if isinstance(frame, Image.Image):
-            return frame.convert("RGB")
-
+        import numpy as np
         try:
             import cv2
-            import numpy as np
-
-            if isinstance(frame, np.ndarray):
-                if frame.ndim == 2:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-                else:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                return Image.fromarray(frame).convert("RGB")
         except ImportError:
-            pass
+            cv2 = None
 
-        raise TypeError(f"Unsupported frame type for VLM analysis: {type(frame)!r}")
+        if isinstance(frame, Image.Image):
+            frame_np = np.array(frame.convert("RGB"))
+        elif isinstance(frame, np.ndarray):
+            if frame.ndim == 2:
+                frame_np = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB) if cv2 else np.stack([frame]*3, axis=-1)
+            else:
+                # Assuming OpenCV BGR if ndarray
+                frame_np = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) if cv2 else frame
+        else:
+            raise TypeError(f"Unsupported frame type for VLM analysis: {type(frame)!r}")
+
+        # Image enhancement for low-light or low-contrast drone security footage
+        if cv2 is not None:
+            try:
+                # Convert to LAB space to analyze and enhance lightness channel
+                lab = cv2.cvtColor(frame_np, cv2.COLOR_RGB2LAB)
+                l, a, b = cv2.split(lab)
+                
+                # Check average brightness of the L channel (0-255 range)
+                avg_l = np.mean(l)
+                
+                # If the image is dark or has low contrast, apply CLAHE to boost details
+                if avg_l < 130:
+                    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                    cl = clahe.apply(l)
+                    # Merge enhanced L channel back
+                    enhanced_lab = cv2.merge((cl, a, b))
+                    frame_np = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
+                    print(f"✓ Applied low-light CLAHE enhancement (avg lightness: {avg_l:.1f})")
+            except Exception as e:
+                print(f"⚠ Image enhancement failed: {e}")
+
+        return Image.fromarray(frame_np)
 
     def _build_prompt(self) -> str:
         """Return the VQA question for BLIP-2 (no format tokens needed)."""
