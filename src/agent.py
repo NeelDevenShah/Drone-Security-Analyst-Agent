@@ -110,29 +110,45 @@ class SecurityAnalystAgent:
         self.tokenizer = None
         self.llm_model_name = LLM_CONFIG.model_name
         self.llm_model_repo = LLM_CONFIG.model_repo
-        if LLM_CONFIG.enabled:
-            self._initialize_llm()
+        self.llm_attempted = False
 
     def _initialize_llm(self):
         """Initialize the LLM model for Q&A via HuggingFace Transformers."""
+        if self.llm_attempted:
+            return
+        self.llm_attempted = True
+
         print(f"Initializing QA LLM (Model: {self.llm_model_repo})...")
         try:
             from transformers import AutoTokenizer, AutoModelForCausalLM
             import torch
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            
+            # Determine target device
+            config_device = getattr(LLM_CONFIG, 'device', 'cpu')
+            if config_device == 'auto':
+                target_device = "cuda" if torch.cuda.is_available() else "cpu"
+            else:
+                target_device = config_device
+                
+            self.device = target_device
+            print(f"Loading QA model on device: {self.device}")
             self.tokenizer = AutoTokenizer.from_pretrained(self.llm_model_repo)
+            
             self.llm = AutoModelForCausalLM.from_pretrained(
                 self.llm_model_repo,
                 torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
             )
             self.llm.to(self.device)
-            print("✓ QA LLM loaded via Transformers successfully")
+            print(f"✓ QA LLM loaded via Transformers successfully on {self.device}")
         except Exception as e:
             print(f"⚠ Failed to load QA model: {e}")
             self.llm = None
+            raise e
 
     def query_llm(self, prompt: str) -> str:
         """Query the SmolLM2 LLM model directly."""
+        if LLM_CONFIG.enabled and self.llm is None:
+            self._initialize_llm()
         if self.llm is None:
             return ""
         try:
@@ -352,6 +368,9 @@ class SecurityAnalystAgent:
             return "Based on the security logs, no relevant events were found matching your query."
             
         # If the 2B QA LLM is loaded, use it to answer the question using the retrieved context!
+        if LLM_CONFIG.enabled and self.llm is None:
+            self._initialize_llm()
+
         if self.llm is not None:
             context = "Security logs from current shift:\n"
             for idx, f in enumerate(frames):

@@ -61,3 +61,5 @@ reports/*.pdf
 reports/*.docx
 data/frames.db
 *.mpg
+*.db
+data/

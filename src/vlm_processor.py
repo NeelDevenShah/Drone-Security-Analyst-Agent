@@ -38,7 +38,7 @@ class VLMProcessor:
         Initialize VLM processor
         
         Args:
-            model_name: Which VLM to use ("blip2", "llava", "qwen-vl", "gpt4o")
+            model_name: Which VLM to use ("qwen2-vl", "llava", "gpt4o")
         """
         self.model_name = model_name
         self.model = None
@@ -53,82 +53,40 @@ class VLMProcessor:
 
     def _initialize_model(self):
         """
-        Load the specified VLM model.
-        For production, would download from HuggingFace or use API.
+        Load the specified VLM model (Qwen2-VL).
         """
         print(f"Initializing {self.model_name} VLM...")
         
-        if self.model_name == "blip2":
-            try:
-                from transformers import Blip2Processor, Blip2ForConditionalGeneration
-                import torch
-                
-                self.device = "cuda" if torch.cuda.is_available() else "cpu"
-                print(f"Using device: {self.device}")
-                
-                self.processor = Blip2Processor.from_pretrained(VLM_CONFIG.model_repo)
-                self.model = Blip2ForConditionalGeneration.from_pretrained(
-                    VLM_CONFIG.model_repo,
-                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
-                )
-                self.model.to(self.device)
-                self.model.eval()
-                print("✓ BLIP-2 model loaded successfully")
-            except ImportError:
-                if not VLM_CONFIG.fallback_on_load_error:
-                    raise RuntimeError(
-                        "Failed to initialize blip2 VLM: transformers is not installed"
-                    )
-
-                print("⚠ Transformers not installed. Using mock VLM processor.")
-                self.processor = None
-                self.model = None
-            except Exception as e:
-                if not VLM_CONFIG.fallback_on_load_error:
-                    raise
-
-                print(f"⚠ Failed to load {self.model_name} model: {e}")
-                print("⚠ Using mock VLM processor.")
-                self.processor = None
-                self.model = None
-        elif self.model_name == "qwen2-vl":
-            try:
-                from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
-                import torch
-                
-                self.device = "cuda" if torch.cuda.is_available() else "cpu"
-                print(f"Using device: {self.device}")
-                
-                self.processor = AutoProcessor.from_pretrained(VLM_CONFIG.model_repo)
-                self.model = Qwen2VLForConditionalGeneration.from_pretrained(
-                    VLM_CONFIG.model_repo,
-                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-                    device_map="auto" if self.device == "cuda" else None
-                )
-                self.model.eval()
-                print("✓ Qwen2-VL model loaded successfully")
-            except ImportError:
-                if not VLM_CONFIG.fallback_on_load_error:
-                    raise RuntimeError(
-                        "Failed to initialize qwen2-vl VLM: transformers is not installed"
-                    )
-
-                print("⚠ Transformers not installed. Using mock VLM processor.")
-                self.processor = None
-                self.model = None
-            except Exception as e:
-                if not VLM_CONFIG.fallback_on_load_error:
-                    raise
-
-                print(f"⚠ Failed to load {self.model_name} model: {e}")
-                print("⚠ Using mock VLM processor.")
-                self.processor = None
-                self.model = None
-        else:
-            if not VLM_CONFIG.fallback_on_load_error:
-                raise ValueError(f"VLM model {self.model_name!r} is not configured")
-
-            print(f"⚠ Model {self.model_name} not yet configured. Using mock processor.")
+        try:
+            from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+            import torch
+            
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            print(f"Using device: {self.device}")
+            
+            # Limit resolution to optimize dynamic patch visual tokens and prevent OOM
+            min_pixels = 256 * 28 * 28
+            max_pixels = 512 * 28 * 28
+            
+            self.processor = AutoProcessor.from_pretrained(
+                VLM_CONFIG.model_repo,
+                min_pixels=min_pixels,
+                max_pixels=max_pixels
+            )
+            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+                VLM_CONFIG.model_repo,
+                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                device_map="auto" if self.device == "cuda" else None
+            )
+            self.model.eval()
+            print("✓ Qwen2-VL model loaded successfully")
+        except ImportError as e:
+            raise RuntimeError(
+                "Failed to initialize qwen2-vl VLM: transformers is not installed"
+            ) from e
+        except Exception as e:
+            print(f"⚠ Failed to load {self.model_name} model: {e}")
+            raise
 
     def analyze_frame(self, frame_data: Dict[str, Any]) -> VLMAnalysis:
         """
@@ -193,100 +151,68 @@ class VLMProcessor:
         try:
             import torch
             
-            if self.model_name == "qwen2-vl":
-                conversation = [
-                    {
-                        "role": "system",
-                        "content": [
-                            {"type": "text", "text": "You are a precise drone security camera assistant. You must analyze images carefully, even under dark, shadowed, or low-light conditions, to detect objects of interest. Output ONLY a valid JSON object. Do not repeat items. Be concise."}
-                        ]
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image"},
-                            {"type": "text", "text": self._build_prompt()},
-                        ],
-                    }
-                ]
-                text_prompt = self.processor.apply_chat_template(conversation, add_generation_prompt=True)
-                inputs = self.processor(
-                    text=[text_prompt],
-                    images=[image],
-                    padding=True,
-                    return_tensors="pt"
+            conversation = [
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "text", "text": "You are a precise drone security camera assistant. You must analyze images carefully, even under dark, shadowed, or low-light conditions, to detect objects of interest. Output ONLY a valid JSON object. Do not repeat items. Be concise."}
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": self._build_prompt()},
+                    ],
+                }
+            ]
+            text_prompt = self.processor.apply_chat_template(conversation, add_generation_prompt=True)
+            inputs = self.processor(
+                text=[text_prompt],
+                images=[image],
+                padding=True,
+                return_tensors="pt"
+            )
+            inputs = {key: value.to(self.device) for key, value in inputs.items()}
+            
+            with torch.no_grad():
+                generated_ids = self.model.generate(
+                    **inputs,
+                    max_new_tokens=VLM_CONFIG.max_new_tokens,
+                    do_sample=False,
+                    repetition_penalty=1.2,
                 )
-                inputs = {key: value.to(self.device) for key, value in inputs.items()}
-                
-                with torch.no_grad():
-                    generated_ids = self.model.generate(
-                        **inputs,
-                        max_new_tokens=VLM_CONFIG.max_new_tokens,
-                        do_sample=False,
-                        repetition_penalty=1.2,
-                    )
-                
-                generated_ids_trimmed = [
-                    out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
-                ]
-                raw_output = self.processor.batch_decode(
-                    generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                )[0].strip()
-                
-                # Robust JSON parsing and stripping of markdown JSON tags
-                clean_output = raw_output
-                for marker in ["```json", "```"]:
-                    if clean_output.startswith(marker):
-                        clean_output = clean_output[len(marker):].strip()
-                    if clean_output.endswith(marker):
-                        clean_output = clean_output[:-len(marker)].strip()
-                
-                parsed = self._loads_json_object(clean_output)
-                if parsed and isinstance(parsed, dict):
-                    # Use normalizer to get allowed objects and activity type
-                    normalized = self._parse_model_output(clean_output)
-                    description = normalized["description"]
-                    objects = normalized["objects"]
-                    activity_type = normalized["activity_type"]
-                else:
-                    # If full JSON parsing still fails, parse whatever text we got
-                    description = clean_output
-                    activity_type = self._infer_activity_type(description)
-                    objects = extract_objects_from_keywords(description)
-                    
-            else:  # blip2 fallback
-                inputs = self.processor(
-                    images=image,
-                    text=self._build_prompt(),
-                    return_tensors="pt"
-                )
-                inputs = {key: value.to(self.device) for key, value in inputs.items()}
-
-                with torch.no_grad():
-                    generated_ids = self.model.generate(
-                        **inputs,
-                        max_new_tokens=VLM_CONFIG.max_new_tokens,
-                        num_beams=4,           # beam search for better captions
-                        length_penalty=1.2,    # encourages longer, more complete answers
-                    )
-
-                raw_caption = self.processor.batch_decode(
-                    generated_ids, skip_special_tokens=True
-                )[0].strip()
-
-                # Strip the echoed prompt prefix if BLIP-2 repeats it
-                prompt_text = self._build_prompt()
-                if raw_caption.lower().startswith(prompt_text.lower()):
-                    raw_caption = raw_caption[len(prompt_text):].strip()
-                    
-                description = raw_caption
+            
+            generated_ids_trimmed = [
+                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
+            ]
+            raw_output = self.processor.batch_decode(
+                generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )[0].strip()
+            
+            # Robust JSON parsing and stripping of markdown JSON tags
+            clean_output = raw_output
+            for marker in ["```json", "```"]:
+                if clean_output.startswith(marker):
+                    clean_output = clean_output[len(marker):].strip()
+                if clean_output.endswith(marker):
+                    clean_output = clean_output[:-len(marker)].strip()
+            
+            parsed = self._loads_json_object(clean_output)
+            if parsed and isinstance(parsed, dict):
+                # Use normalizer to get allowed objects and activity type
+                normalized = self._parse_model_output(clean_output)
+                description = normalized["description"]
+                objects = normalized["objects"]
+                activity_type = normalized["activity_type"]
+            else:
+                # If full JSON parsing still fails, parse whatever text we got
+                description = clean_output
                 activity_type = self._infer_activity_type(description)
                 objects = extract_objects_from_keywords(description)
 
         except Exception as e:
             print(f"⚠ Real VLM analysis failed: {e}")
-            if not VLM_CONFIG.fallback_on_load_error:
-                raise
             raise
 
         return VLMAnalysis(
@@ -535,14 +461,14 @@ class VLMFactory:
     """Factory to create VLM processors for different models"""
 
     @staticmethod
-    def create(model_name: str = "blip2") -> VLMProcessor:
+    def create(model_name: str = "qwen2-vl") -> VLMProcessor:
         """Create a VLM processor for the specified model"""
         return VLMProcessor(model_name=model_name)
 
 
 if __name__ == "__main__":
     # Test VLM processor with simulated data
-    processor = VLMProcessor(model_name="blip2")
+    processor = VLMProcessor(model_name="qwen2-vl")
     
     test_frame = {
         "frame_id": 1,

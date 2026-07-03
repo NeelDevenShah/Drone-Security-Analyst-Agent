@@ -115,7 +115,6 @@ class VLMConfig:
     )
     max_new_tokens: int = 256
     use_cv_fallback: bool = True
-    fallback_on_load_error: bool = False
     simulated_confidence: float = 0.95
     cv_fallback_confidence: float = 0.65
     vlm_confidence: float = 0.85
@@ -127,6 +126,7 @@ class LLMConfig:
     enabled: bool = True
     model_name: str = "transformers"
     model_repo: str = "Qwen/Qwen2.5-1.5B-Instruct"
+    device: str = "cuda"  # Default to CUDA/GPU for model acceleration
 
     max_new_tokens: int = 256
     temperature: float = 0.1
