@@ -121,11 +121,21 @@ class VideoStreamProcessor:
             # Grab-and-skip: use grab() (no decode) to advance frames_per_step-1
             # positions, then retrieve() the final frame (full decode, correct pixels).
             skip_count = frames_per_step - 1
+            eos_during_skip = False
             for _ in range(skip_count):
                 if not self.cap.grab():
-                    break  # end of stream hit during skip
+                    # End-of-stream reached during skip phase.
+                    # Do NOT fall through to cap.read() – on H.264/MPEG codecs
+                    # read() after a failed grab() returns a black zero-filled
+                    # frame with ret=True, producing garbage "black" frames.
+                    eos_during_skip = True
+                    break
 
-            ret, frame = self.cap.read()  # decode only this frame
+            if eos_during_skip:
+                # Treat as end-of-stream
+                ret, frame = False, None
+            else:
+                ret, frame = self.cap.read()  # decode only this frame
 
             if not ret:
                 if self.loop and self.total_frames > 0:
