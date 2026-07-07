@@ -103,49 +103,79 @@ class VideoStreamProcessor:
             self.cap.release()
         print("✓ Video stream processing stopped")
 
+    def _is_mpeg_source(self) -> bool:
+        """Return True if the source is an MPEG-1/2 file that requires full decode of every frame."""
+        src = str(self.source).lower()
+        return any(src.endswith(ext) for ext in (".mpg", ".mpeg", ".m2v", ".vob", ".ts"))
+
     def _process_stream(self):
         """
-        Read frames from the video efficiently by using grab() to skip
-        intermediate frames without full decoding, then retrieve() only
-        for the frame we actually want to analyse.
+        Read frames from the video, sampling at fps_limit rate.
 
-        This avoids the CAP_PROP_POS_FRAMES seek+read race condition that
-        occurs with H.264/MPEG codecs where a seek lands on the nearest
-        keyframe and the immediate read() returns decoder-garbage (static
-        noise) instead of the correct pixel data.
+        Strategy depends on the codec:
+
+        • MPEG-1/2 (.mpg/.mpeg): fully decode EVERY frame via cap.read() and
+          discard frames we don't need by counting.  grab()-without-retrieve()
+          skipping corrupts the MPEG inter-frame decoder state (P/B frames
+          depend on previously decoded reference frames) and produces solid
+          black frames even when ret=True.
+
+        • All other formats (H.264, VP9, MJPEG …): use the faster grab()-skip
+          approach – advance N-1 positions with grab() (no decode) then
+          cap.read() for the Nth frame.  A failed grab() during the skip phase
+          signals EOS; we never call read() afterwards to avoid the zero-frame
+          black-image bug.
         """
         source_fps = self.fps if self.fps > 0 else 30.0
         frames_per_step = max(1, int(round(source_fps / self.fps_limit))) if self.fps_limit > 0 else 1
+        use_full_decode = self._is_mpeg_source()
+
+        if use_full_decode:
+            print(f"  ℹ MPEG source detected – using full-decode frame sampling (every {frames_per_step} frames)")
+
+        raw_frame_counter = 0  # counts every decoded frame from the source
 
         while self.is_running:
-            # Grab-and-skip: use grab() (no decode) to advance frames_per_step-1
-            # positions, then retrieve() the final frame (full decode, correct pixels).
-            skip_count = frames_per_step - 1
-            eos_during_skip = False
-            for _ in range(skip_count):
-                if not self.cap.grab():
-                    # End-of-stream reached during skip phase.
-                    # Do NOT fall through to cap.read() – on H.264/MPEG codecs
-                    # read() after a failed grab() returns a black zero-filled
-                    # frame with ret=True, producing garbage "black" frames.
-                    eos_during_skip = True
+            if use_full_decode:
+                # ── MPEG path: decode every frame, keep only every Nth ──────
+                ret, frame = self.cap.read()
+                if not ret:
+                    if self.loop and self.total_frames > 0:
+                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        raw_frame_counter = 0
+                        continue
+                    self.is_running = False
                     break
 
-            if eos_during_skip:
-                # Treat as end-of-stream
-                ret, frame = False, None
-            else:
-                ret, frame = self.cap.read()  # decode only this frame
+                raw_frame_counter += 1
+                if raw_frame_counter % frames_per_step != 0:
+                    continue  # discard this frame, keep decoding
 
-            if not ret:
-                if self.loop and self.total_frames > 0:
-                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    continue
-                self.is_running = False
-                break
+            else:
+                # ── Non-MPEG path: grab()-skip then read() ───────────────────
+                skip_count = frames_per_step - 1
+                eos_during_skip = False
+                for _ in range(skip_count):
+                    if not self.cap.grab():
+                        eos_during_skip = True
+                        break
+
+                if eos_during_skip:
+                    ret, frame = False, None
+                else:
+                    ret, frame = self.cap.read()
+
+                if not ret:
+                    if self.loop and self.total_frames > 0:
+                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        raw_frame_counter = 0
+                        continue
+                    self.is_running = False
+                    break
 
             self.frame_count += 1
             current_pos = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+
 
             stream_frame = StreamFrame(
                 frame_id=self.frame_count,
