@@ -59,7 +59,10 @@ class VideoStreamProcessor:
     def _open_stream(self):
         """Open video stream from source"""
         try:
-            self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
+            # Do NOT force cv2.CAP_FFMPEG for MPEG-1/2 files – it causes the
+            # decoder to return raw YUV bytes without colorspace conversion,
+            # producing rainbow static.  Let OpenCV auto-select the backend.
+            self.cap = cv2.VideoCapture(self.source)
 
             if hasattr(cv2, "setLogLevel"):
                 try:
@@ -108,6 +111,27 @@ class VideoStreamProcessor:
         src = str(self.source).lower()
         return any(src.endswith(ext) for ext in (".mpg", ".mpeg", ".m2v", ".vob", ".ts"))
 
+    @staticmethod
+    def _is_valid_frame(frame) -> bool:
+        """
+        Reject garbage frames before they reach the VLM.
+
+        Two failure modes we guard against:
+          • All-black  (ret=True but frame is zeros) – mean < 3
+          • Static / noise (YUV misread) – std-dev across all pixels > 80
+            because real-world footage is spatially correlated; pure noise is not.
+        """
+        import numpy as np
+        if frame is None:
+            return False
+        mean = float(frame.mean())
+        std  = float(frame.std())
+        if mean < 3:
+            return False   # all-black frame
+        if std > 80 and mean > 100:
+            return False   # rainbow static / decoder garbage
+        return True
+
     def _process_stream(self):
         """
         Read frames from the video, sampling at fps_limit rate.
@@ -150,6 +174,10 @@ class VideoStreamProcessor:
                 raw_frame_counter += 1
                 if raw_frame_counter % frames_per_step != 0:
                     continue  # discard this frame, keep decoding
+
+                if not self._is_valid_frame(frame):
+                    print(f"  ⚠ Skipping garbage frame at source position {raw_frame_counter} (black/static)")
+                    continue
 
             else:
                 # ── Non-MPEG path: grab()-skip then read() ───────────────────
