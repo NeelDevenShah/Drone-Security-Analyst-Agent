@@ -384,6 +384,25 @@ class FrameIndexer:
             results.append(result)
         return results
 
+    def clear_all(self):
+        """
+        Wipe all frames and alerts from the database.
+        Called before importing a new results.json so stale/simulated data
+        from previous runs doesn't bleed through.
+        """
+        with self.db_lock:
+            self.conn.execute("DELETE FROM alerts")
+            self.conn.execute("DELETE FROM frames")
+            self.conn.commit()
+        # Also clear ChromaDB collection so semantic search is fresh
+        if self.chroma_collection is not None:
+            try:
+                self.chroma_client.delete_collection("drone_frames")
+                self.chroma_collection = self.chroma_client.get_or_create_collection("drone_frames")
+            except Exception as e:
+                print(f"⚠ Could not reset ChromaDB collection: {e}")
+        print("✓ Cleared all frames and alerts from database")
+
     def close(self):
         """Close database connection"""
         with self.db_lock:

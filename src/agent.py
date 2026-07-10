@@ -197,9 +197,15 @@ class SecurityAnalystAgent:
         }
         
         for frame in frames:
-            # Analyze frame with VLM
-            vlm_analysis = self.vlm_processor.analyze_frame(frame) if self.vlm_processor else None
-            
+            # Only run VLM re-analysis when the frame carries actual pixel data
+            # (i.e. live pipeline frames). Simulated / JSON frames have no image
+            # and would crash with "requires 'frame_data' or 'image'"
+            has_image = frame.get("frame_data") is not None or frame.get("image") is not None
+            if self.vlm_processor and has_image:
+                vlm_analysis = self.vlm_processor.analyze_frame(frame)
+            else:
+                vlm_analysis = None
+
             # Store frame in indexer
             self.indexer.store_frame(
                 frame_id=frame['frame_id'],
@@ -258,8 +264,9 @@ class SecurityAnalystAgent:
         Returns:
             Analysis result including alerts
         """
-        # VLM analysis
-        vlm_analysis = self.vlm_processor.analyze_frame(frame) if self.vlm_processor else None
+        # VLM analysis – only when frame carries actual pixel data
+        has_image = frame.get("frame_data") is not None or frame.get("image") is not None
+        vlm_analysis = self.vlm_processor.analyze_frame(frame) if (self.vlm_processor and has_image) else None
         
         # Check alerts
         alerts = self.alert_engine.analyze_frame(frame)

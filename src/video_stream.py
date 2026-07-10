@@ -201,6 +201,10 @@ class VideoStreamProcessor:
                     self.is_running = False
                     break
 
+                if not self._is_valid_frame(frame):
+                    print(f"  ⚠ Skipping garbage frame #{self.frame_count + 1} (black/static)")
+                    continue
+
             self.frame_count += 1
             current_pos = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
 
