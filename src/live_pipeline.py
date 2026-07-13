@@ -279,14 +279,20 @@ class LiveSecurityAnalysisPipeline:
         
         print("\n" + "=" * 70)
 
-    def export_results(self, output_file: str = PIPELINE_CONFIG.export_path):
+    def export_results(self, output_file: str = PIPELINE_CONFIG.export_path, append: bool = False):
         """Export full end-to-end results to JSON.
+
+        Args:
+            output_file: Path to write results JSON.
+            append: If True, merge with existing file instead of overwriting.
+                    New frames replace old ones with the same frame_id.
+                    Alerts are combined and de-duplicated by message text.
 
         Each frame record contains:
           - frame_id, timestamp, location
-          - description (full BLIP-2 caption)
-          - objects, activity_type, confidence, processing_time_ms
+          - description, objects, activity_type, confidence, processing_time_ms
           - telemetry (GPS, altitude, etc.)
+          - image_path: path to saved JPEG proof image (None if not saved)
           - alerts: list of every alert triggered on this frame
         """
         import json
@@ -304,13 +310,11 @@ class LiveSecurityAnalysisPipeline:
                 "processing_time_ms": round(fd.processing_time_ms, 2),
                 "location": PIPELINE_CONFIG.default_location,
                 "telemetry": None,
-                "image_path": self.frame_image_paths.get(fd.frame_id),  # None if not saved
+                "image_path": self.frame_image_paths.get(fd.frame_id),
                 "alerts": [],
             }
 
-        # Attach telemetry from stream frames (stored in frame_descriptions indirectly)
-        # We stored full frame_data dicts in previous_frames inside _process_loop;
-        # pull telemetry back from the indexer instead (it stores it in the DB).
+        # Attach telemetry from the DB
         try:
             with self.indexer.db_lock:
                 rows = self.indexer.conn.execute(
@@ -339,18 +343,69 @@ class LiveSecurityAnalysisPipeline:
                 "timestamp": alert.timestamp,
                 "location": alert.location,
                 "message": alert.message,
-                "frame_image": self.frame_image_paths.get(alert.frame_id),  # direct link to saved image
+                "frame_image": self.frame_image_paths.get(alert.frame_id),
             }
             all_alerts_list.append(alert_record)
             fid = alert.frame_id
             if fid in frame_data_lookup:
                 frame_data_lookup[fid]["alerts"].append(alert_record)
 
-        # Sort frames by frame_id for readability
-        frames_list = sorted(frame_data_lookup.values(), key=lambda x: x["frame_id"])
+        # Sort new frames by frame_id
+        new_frames = sorted(frame_data_lookup.values(), key=lambda x: x["frame_id"])
+
+        # ── Append mode: merge with existing file ───────────────────────────────
+        import os
+        if append and os.path.exists(output_file):
+            try:
+                with open(output_file) as f:
+                    existing = json.load(f)
+
+                # Merge frames: existing first, then new frames overwrite by frame_id
+                existing_frames_by_id: Dict[int, Dict[str, Any]] = {
+                    fr["frame_id"]: fr for fr in existing.get("frames", [])
+                }
+                for fr in new_frames:
+                    existing_frames_by_id[fr["frame_id"]] = fr
+                merged_frames = sorted(existing_frames_by_id.values(), key=lambda x: x["frame_id"])
+
+                # Merge alerts: combine and de-duplicate by (frame_id, message)
+                seen_alert_keys = set()
+                merged_alerts = []
+                for a in existing.get("all_alerts", []) + all_alerts_list:
+                    key = (a.get("timestamp", ""), a.get("message", ""))
+                    if key not in seen_alert_keys:
+                        seen_alert_keys.add(key)
+                        merged_alerts.append(a)
+
+                # Merge summary counts
+                existing_summary = existing.get("summary", {})
+                new_summary = self.get_summary()
+                merged_summary = dict(existing_summary)
+                for k, v in new_summary.items():
+                    if isinstance(v, (int, float)) and isinstance(existing_summary.get(k), (int, float)):
+                        merged_summary[k] = existing_summary[k] + v
+                    else:
+                        merged_summary[k] = v  # new value wins for non-numeric fields
+                merged_summary["video_source"] = (
+                    f"{existing_summary.get('video_source', '')} + {new_summary.get('video_source', '')}"
+                )
+
+                frames_list = merged_frames
+                all_alerts_list = merged_alerts
+                summary = merged_summary
+                print(f"  ℹ Append mode: merging with {len(existing.get('frames', []))} existing frames")
+            except Exception as e:
+                print(f"⚠ Could not read existing file for append – overwriting instead: {e}")
+                frames_list = new_frames
+                summary = self.get_summary()
+        else:
+            if append:
+                print(f"  ℹ Append mode: {output_file} does not exist yet – creating new file")
+            frames_list = new_frames
+            summary = self.get_summary()
 
         results = {
-            "summary": self.get_summary(),
+            "summary": summary,
             "frames": frames_list,
             "all_alerts": all_alerts_list,
         }
@@ -358,8 +413,9 @@ class LiveSecurityAnalysisPipeline:
         with open(output_file, "w") as f:
             json.dump(results, f, indent=2, default=str)
 
-        print(f"\n✓ Results exported to {output_file}")
-        print(f"  {len(frames_list)} frames, {len(all_alerts_list)} alerts")
+        print(f"\n✓ Results {'appended to' if append else 'exported to'} {output_file}")
+        print(f"  {len(frames_list)} total frames, {len(all_alerts_list)} total alerts")
+
 
 
 
@@ -406,6 +462,17 @@ def main():
         default=VLM_CONFIG.enabled,
         help=f"Use configured VLM for semantic frame descriptions (default: {VLM_CONFIG.enabled})"
     )
+    parser.add_argument(
+        "--append",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Append results to an existing export file instead of overwriting it. "
+            "Use this to accumulate results from multiple videos into a single JSON. "
+            "New frames replace existing ones with the same frame_id; "
+            "alerts are combined and de-duplicated. (default: False = overwrite)"
+        )
+    )
     
     args = parser.parse_args()
     
@@ -433,7 +500,7 @@ def main():
         pipeline.print_final_report()
         
         if args.export:
-            pipeline.export_results(args.export)
+            pipeline.export_results(args.export, append=args.append)
 
 
 if __name__ == "__main__":

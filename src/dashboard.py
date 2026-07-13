@@ -494,25 +494,80 @@ def show_query_interface():
 
 
 def show_qa_interface():
-    """Q&A interface for user questions"""
+    """Q&A interface with cited source frames and images"""
     st.header("❓ Ask Questions About the Shift")
-    
+
     agent = st.session_state.agent
-    
+    frame_image_paths = getattr(st.session_state, "frame_image_paths", {})
+
     st.write("Examples:")
     st.write("- How many vehicles detected?")
     st.write("- What about the blue truck?")
     st.write("- What objects were in the video?")
     st.write("- How many people detected?")
-    
+
     question = st.text_input("Ask a question:")
-    
+
     if question:
-        answer = agent.answer_question(question)
-        
+        with st.spinner("Searching security logs…"):
+            cited_frames = agent.query_frame_index(question)
+            answer = agent.answer_question(question)
+
         st.markdown("---")
+
+        # ── Answer ──────────────────────────────────────────────────────────
         st.subheader("Answer")
         st.write(answer)
+
+        # ── Citations with frame images ──────────────────────────────────────
+        if cited_frames:
+            st.markdown("---")
+            st.subheader(f"📎 Source Frames ({len(cited_frames)} citations)")
+            st.caption("These are the frames the answer was derived from.")
+
+            for idx, frame in enumerate(cited_frames):
+                fid = frame.get("frame_id")
+                img_path = frame_image_paths.get(fid)
+                alerts = frame.get("alert_context", [])
+
+                with st.expander(
+                    f"Citation {idx + 1} — Frame #{fid} · {frame.get('timestamp', '')[:19]} · {frame.get('location', '')}",
+                    expanded=(idx == 0)
+                ):
+                    col_img, col_meta = st.columns([1, 2])
+
+                    with col_img:
+                        if img_path:
+                            from pathlib import Path as _Path
+                            if _Path(img_path).exists():
+                                st.image(img_path, caption=f"Frame #{fid}", use_container_width=True)
+                            else:
+                                st.caption(f"📷 Image file missing:\n`{img_path}`")
+                        else:
+                            st.info("📷 No image saved for this frame")
+
+                    with col_meta:
+                        st.markdown(f"**📍 Location:** {frame.get('location', 'N/A')}")
+                        st.markdown(f"**🏃 Activity:** {frame.get('activity_type', 'N/A')}")
+                        st.markdown(f"**🔍 Objects:** {', '.join(frame.get('objects', [])) or 'none'}")
+                        st.markdown("**📝 Description:**")
+                        st.write(frame.get('description', ''))
+
+                        if alerts:
+                            st.markdown("**🚨 Alerts on this frame:**")
+                            for a in alerts:
+                                sev_icon = {
+                                    'CRITICAL': '🔴', 'HIGH': '🟠',
+                                    'MEDIUM': '🟡', 'LOW': '🟢'
+                                }.get(a.get('severity', ''), '⚪')
+                                st.markdown(
+                                    f"{sev_icon} **{a.get('severity')}** — "
+                                    f"{a.get('message', '')} "
+                                    f"*(threat: {a.get('threat_score', '?')}/10)*"
+                                )
+        else:
+            st.info("No matching frames found for this query.")
+
 
 
 def show_summary_report(results):
