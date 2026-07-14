@@ -1,6 +1,6 @@
 """
-VLM Processor: Analyzes frames using Vision Language Models
-Currently uses BLIP-2 from HuggingFace for frame description generation
+VLM Processor: Analyzes frames using Vision Language Models.
+Currently uses Qwen2-VL from HuggingFace for frame description generation.
 """
 import json
 from typing import Dict, List, Any, Optional
@@ -28,9 +28,9 @@ class VLMAnalysis:
 class VLMProcessor:
     """
     Processes frames with Vision Language Models to extract semantic information.
-    
-    Currently configured for BLIP-2 (accessible via HuggingFace).
-    Can be extended to support GPT-4o, LLaVA, Qwen-VL, etc.
+
+    Currently configured for Qwen2-VL (accessible via HuggingFace).
+    Can be extended to support GPT-4o, LLaVA, and other multimodal models.
     """
 
     def __init__(self, model_name: str = VLM_CONFIG.model_name):
@@ -126,9 +126,8 @@ class VLMProcessor:
 
     def _analyze_real_frame(self, frame_data: Dict[str, Any]) -> VLMAnalysis:
         """
-        Processes actual image using the configured VLM (Qwen2-VL or BLIP-2).
-        For Qwen2-VL: Requests structured JSON directly.
-        For BLIP-2: Queries description and infers structured fields via keywords.
+        Processes actual image using Qwen2-VL.
+        Requests structured JSON directly from the model.
         """
         frame = frame_data.get("frame_data")
         if frame is None:
@@ -228,7 +227,7 @@ class VLMProcessor:
 
     def _infer_activity_type(self, caption: str) -> str:
         """
-        Lightweight keyword-based activity_type inference from a BLIP-2 caption.
+        Lightweight keyword-based activity_type inference from a VLM caption.
         Needed only to satisfy alert rule conditions (e.g. night_vehicle requires
         activity_type == 'vehicle'). The description itself is the primary signal.
         """
@@ -288,7 +287,7 @@ class VLMProcessor:
         return Image.fromarray(frame_np)
 
     def _build_prompt(self) -> str:
-        """Return the VQA question for BLIP-2 (no format tokens needed)."""
+        """Return the VQA prompt for the VLM."""
         return VLM_CONFIG.prompt
 
     def _parse_model_output(self, raw_output: str) -> Dict[str, Any]:

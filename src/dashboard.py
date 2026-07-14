@@ -51,7 +51,7 @@ def import_results_into_agent(agent, results: dict) -> dict:
     indexer = agent.indexer
     frames = results["frames"]
 
-    # ── CRITICAL: wipe stale data from previous runs first ───────────────────
+    # CRITICAL: wipe stale data from previous runs first
     indexer.clear_all()
 
     imported_frames = 0
@@ -157,7 +157,7 @@ def main():
     with st.sidebar:
         st.header("Controls")
 
-        # ── results.json loader ──────────────────────────────────────────────
+        # results.json loader
         st.subheader("Load Pipeline Results")
         results_path = st.text_input(
             "results.json path",
@@ -183,34 +183,7 @@ def main():
                         f"and {len(results['alerts_generated'])} alerts from {results_path}"
                     )
 
-        st.markdown("---")
 
-        # ── simulated data fallback ──────────────────────────────────────────
-        if st.button("🔄 Load Simulated Frames", key="process_btn"):
-            with st.spinner("Processing simulated frames..."):
-                sim_file = Path("/home/neel/Desktop/flytbaseAI/data/simulated_frames.json")
-                data = load_from_results_json(str(sim_file))
-                if data is None:
-                    # Generate synthetic data on the fly
-                    try:
-                        from data_simulator import DataSimulator
-                        simulator = DataSimulator()
-                        raw_frames = simulator.generate_realistic_scenario()
-                        from dataclasses import asdict
-                        data = {"frames": [asdict(f) for f in raw_frames], "all_alerts": [], "summary": {}}
-                    except Exception as e:
-                        st.error(f"Could not generate simulated data: {e}")
-                        data = None
-                if data and data["frames"]:
-                    results = import_results_into_agent(st.session_state.agent, data)
-                    st.session_state.results = results
-                    st.session_state.frames_processed = True
-                    st.success(f"✓ Processed {results['frames_processed']} frames")
-                else:
-                    st.error("No frames to process")
-        
-        st.markdown("---")
-        
         # View options
         view_mode = st.radio(
             "Select View",
@@ -219,7 +192,7 @@ def main():
     
     # Main content area
     if not st.session_state.frames_processed:
-        st.info("👈 Click 'Load & Process Frames' in the sidebar to start")
+        st.info("Load a results.json file using the sidebar to get started.")
         return
     
     results = st.session_state.results
@@ -515,11 +488,9 @@ def show_qa_interface():
 
         st.markdown("---")
 
-        # ── Answer ──────────────────────────────────────────────────────────
         st.subheader("Answer")
         st.write(answer)
 
-        # ── Citations with frame images ──────────────────────────────────────
         if cited_frames:
             st.markdown("---")
             st.subheader(f"📎 Source Frames ({len(cited_frames)} citations)")

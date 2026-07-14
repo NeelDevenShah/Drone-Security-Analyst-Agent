@@ -146,7 +146,7 @@ class SecurityAnalystAgent:
             raise e
 
     def query_llm(self, prompt: str) -> str:
-        """Query the SmolLM2 LLM model directly."""
+        """Query the Qwen2.5 LLM model directly."""
         if LLM_CONFIG.enabled and self.llm is None:
             self._initialize_llm()
         if self.llm is None:
@@ -165,7 +165,7 @@ class SecurityAnalystAgent:
             decoded = self.tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
             return decoded.strip()
         except Exception as e:
-            print(f"⚠ SmolLM2 query failed: {e}")
+            print(f"QA LLM query failed: {e}")
             return ""
 
     def _register_tools(self) -> Dict[str, Callable]:

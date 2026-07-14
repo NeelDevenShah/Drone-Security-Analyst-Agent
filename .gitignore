@@ -1,9 +1,10 @@
-# Python
+# Python bytecode
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
+
+# Build artifacts
 build/
 develop-eggs/
 dist/
@@ -20,12 +21,12 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# Virtual environments
 venv/
 env/
 ENV/
 
-# IDE
+# IDE files
 .vscode/
 .idea/
 *.swp
@@ -38,7 +39,7 @@ ENV/
 .coverage
 htmlcov/
 
-# Database
+# Database files
 *.db
 *.sqlite
 *.sqlite3
@@ -50,16 +51,21 @@ logs/
 # Temp files
 *.tmp
 tmp/
+scratch/
 
-# Data (keep structure, ignore contents)
-data/*.db
+# Data (keep directory structure, ignore large/generated files)
 data/frames.db
+data/frames_live.db
+data/chroma_db/
+data/frames/
 data/embeddings/
 
-# Reports (keep structure)
+# Reports (keep directory structure)
 reports/*.pdf
 reports/*.docx
-data/frames.db
+
+# Video files
 *.mpg
-*.db
-data/
+*.mpeg
+*.mp4
+*.avi

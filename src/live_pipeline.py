@@ -191,7 +191,7 @@ class LiveSecurityAnalysisPipeline:
                     )
                     self.alerts_generated.append(alert)
                 
-                # 6. Update context
+                # 5. Update context
                 previous_frames.append(frame_data)
                 if len(previous_frames) > PIPELINE_CONFIG.context_frame_limit:
                     previous_frames.pop(0)
@@ -353,7 +353,7 @@ class LiveSecurityAnalysisPipeline:
         # Sort new frames by frame_id
         new_frames = sorted(frame_data_lookup.values(), key=lambda x: x["frame_id"])
 
-        # ── Append mode: merge with existing file ───────────────────────────────
+        # Append mode: merge with existing file
         import os
         if append and os.path.exists(output_file):
             try:

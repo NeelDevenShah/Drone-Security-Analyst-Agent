@@ -152,8 +152,9 @@ class AlertEngine:
                     enriched = self.llm_processor.query_llm(enrich_prompt).strip()
                     if enriched and len(enriched) > 10:
                         alert.message = enriched
-                except Exception as e:
-                    pass  # Keep original rule-generated message on failure
+                except Exception:
+                    # Keep original rule-generated message on enrichment failure
+                    pass
 
         # Store alerts
         self.alerts.extend(alerts)
@@ -164,9 +165,9 @@ class AlertEngine:
         """
         LLM-driven alert evaluation.
 
-        Qwen2.5 receives the frame's timestamp, location, and BLIP-2 description
+        Qwen2.5 receives the frame's timestamp, location, and VLM-generated description
         and decides whether a security alert is warranted.  The LLM is the sole
-        decision maker — no keyword lists, no hard-coded rules.
+        decision maker -- no keyword lists, no hard-coded rules.
 
         Falls back to embedding-similarity screening only when the LLM is not loaded.
         """

@@ -103,14 +103,11 @@ class FrameDescriptionGenerator:
             "objects": [],
         }
         
-        # Analyze with VLM
+        # Analyze with VLM; fall back to CV description on any failure
         try:
             return self.vlm_processor.analyze_frame(frame_data)
         except Exception as e:
-            if not VLM_CONFIG.fallback_on_load_error:
-                raise RuntimeError("VLM analysis failed") from e
-
-            print(f"VLM analysis failed: {e}")
+            print(f"VLM analysis failed, using CV fallback: {e}")
             description = self._describe_with_cv(frame)
             objects = self._extract_objects_from_description(description)
             return type("FallbackAnalysis", (), {

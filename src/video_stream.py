@@ -161,7 +161,7 @@ class VideoStreamProcessor:
 
         while self.is_running:
             if use_full_decode:
-                # ── MPEG path: decode every frame, keep only every Nth ──────
+                # MPEG path: decode every frame, keep only every Nth
                 ret, frame = self.cap.read()
                 if not ret:
                     if self.loop and self.total_frames > 0:
@@ -180,7 +180,7 @@ class VideoStreamProcessor:
                     continue
 
             else:
-                # ── Non-MPEG path: grab()-skip then read() ───────────────────
+                # Non-MPEG path: grab()-skip then read()
                 skip_count = frames_per_step - 1
                 eos_during_skip = False
                 for _ in range(skip_count):

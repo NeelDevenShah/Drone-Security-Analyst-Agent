@@ -1,7 +1,6 @@
 """Central runtime configuration for the drone security pipeline."""
 from dataclasses import dataclass, field
 from pathlib import Path
-from datetime import datetime
 from typing import Dict, Tuple
 
 
@@ -38,23 +37,6 @@ class DatabaseConfig:
     """Database defaults."""
     db_path: str = str(PROJECT_ROOT / "data" / "frames.db")
 
-
-@dataclass(frozen=True)
-class SimulatorConfig:
-    """Synthetic data generation defaults."""
-    output_path: str = str(PROJECT_ROOT / "data" / "simulated_frames.json")
-    base_time: datetime = datetime(2026, 6, 13, 0, 0, 0)
-    default_coordinates: Dict[str, float] = field(default_factory=lambda: {
-        "lat": 40.7128,
-        "lon": -74.0060,
-        "altitude": 50,
-    })
-    location_coordinates: Dict[str, Dict[str, float]] = field(default_factory=lambda: {
-        "Main Gate": {"lat": 40.7128, "lon": -74.0060, "altitude": 50},
-        "Garage": {"lat": 40.7135, "lon": -74.0065, "altitude": 45},
-        "Perimeter Fence": {"lat": 40.7130, "lon": -74.0070, "altitude": 55},
-        "Parking Lot": {"lat": 40.7140, "lon": -74.0055, "altitude": 50},
-    })
 
 
 @dataclass(frozen=True)
@@ -161,7 +143,6 @@ class AlertRuleConfig:
 STREAM_CONFIG = StreamConfig()
 PIPELINE_CONFIG = PipelineConfig()
 DATABASE_CONFIG = DatabaseConfig()
-SIMULATOR_CONFIG = SimulatorConfig()
 DETECTION_CONFIG = DetectionConfig()
 VLM_CONFIG = VLMConfig()
 LLM_CONFIG = LLMConfig()
