@@ -3,13 +3,20 @@ VLM Processor: Analyzes frames using Vision Language Models.
 Currently uses Qwen2-VL from HuggingFace for frame description generation.
 """
 import json
+import cv2
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 
-try:
-    from .config import DETECTION_CONFIG, VLM_CONFIG
-except ImportError:
-    from config import DETECTION_CONFIG, VLM_CONFIG
+import sys
+from pathlib import Path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from config import DETECTION_CONFIG, VLM_CONFIG
 
 
 @dataclass
@@ -138,11 +145,6 @@ class VLMProcessor:
 
         image = self._prepare_image(frame)
 
-        try:
-            from detection import extract_objects_from_keywords
-        except ImportError:
-            from .detection import extract_objects_from_keywords
-
         description = ""
         objects = []
         activity_type = "empty"
@@ -208,7 +210,7 @@ class VLMProcessor:
                 # If full JSON parsing still fails, parse whatever text we got
                 description = clean_output
                 activity_type = self._infer_activity_type(description)
-                objects = extract_objects_from_keywords(description)
+                objects = [cat for cat in DETECTION_CONFIG.object_categories if cat in description.lower()]
 
         except Exception as e:
             print(f"⚠ Real VLM analysis failed: {e}")
@@ -232,8 +234,8 @@ class VLMProcessor:
         activity_type == 'vehicle'). The description itself is the primary signal.
         """
         c = caption.lower()
-        has_vehicle = any(kw in c for kw in DETECTION_CONFIG.cv_fallback_keywords.get("vehicle", ()))
-        has_person  = any(kw in c for kw in DETECTION_CONFIG.cv_fallback_keywords.get("person", ()))
+        has_vehicle = any(kw in c for kw in ("vehicle", "car", "truck", "van", "sedan", "pickup"))
+        has_person  = any(kw in c for kw in ("person", "people", "human", "man", "woman", "pedestrian"))
 
         if has_vehicle and has_person:
             return "vehicle+person"
@@ -241,25 +243,20 @@ class VLMProcessor:
             return "vehicle"
         if has_person:
             return "person"
-        return DETECTION_CONFIG.fallback_activity
+        return "empty"
 
     def _prepare_image(self, frame):
         """Convert an OpenCV/PIL frame into an RGB PIL image for the VLM, with brightness/contrast enhancement."""
         from PIL import Image
         import numpy as np
-        try:
-            import cv2
-        except ImportError:
-            cv2 = None
-
         if isinstance(frame, Image.Image):
             frame_np = np.array(frame.convert("RGB"))
         elif isinstance(frame, np.ndarray):
             if frame.ndim == 2:
-                frame_np = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB) if cv2 else np.stack([frame]*3, axis=-1)
+                frame_np = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
             else:
                 # Assuming OpenCV BGR if ndarray
-                frame_np = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) if cv2 else frame
+                frame_np = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         else:
             raise TypeError(f"Unsupported frame type for VLM analysis: {type(frame)!r}")
 
@@ -297,8 +294,8 @@ class VLMProcessor:
         if not parsed:
             return {
                 "description": raw_output or "Frame analyzed by VLM, no caption generated",
-                "objects": [DETECTION_CONFIG.fallback_object],
-                "activity_type": DETECTION_CONFIG.fallback_activity,
+                "objects": ["scene"],
+                "activity_type": "empty",
             }
 
         objects = parsed.get("objects", [])
@@ -314,9 +311,9 @@ class VLMProcessor:
             if isinstance(obj, str) and obj.strip().lower() in allowed_objects
         ]
         if not normalized_objects:
-            normalized_objects = [DETECTION_CONFIG.fallback_object]
+            normalized_objects = ["scene"]
 
-        activity_type = parsed.get("activity_type", DETECTION_CONFIG.fallback_activity)
+        activity_type = parsed.get("activity_type", "empty")
         allowed_activities = {
             activity.lower(): activity
             for activity in DETECTION_CONFIG.activity_categories
@@ -324,7 +321,7 @@ class VLMProcessor:
         if isinstance(activity_type, str) and activity_type.strip().lower() in allowed_activities:
             activity_type = allowed_activities[activity_type.strip().lower()]
         else:
-            activity_type = DETECTION_CONFIG.fallback_activity
+            activity_type = "empty"
 
         description = parsed.get("description") or raw_output or "Frame analyzed by VLM"
 

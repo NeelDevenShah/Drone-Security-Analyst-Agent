@@ -59,14 +59,13 @@ An intelligent AI-powered security monitoring system that analyzes drone video f
 | :--- | :--- | :--- |
 | Video Reader | `src/video_stream.py` | Thread-safe OpenCV stream; MPEG-aware full-decode sampling |
 | VLM Processor | `src/vlm_processor.py` | Qwen2-VL-2B; structured JSON output; CLAHE image enhancement |
-| Frame Description | `src/frame_description.py` | Bridge from raw frame to `FrameDescription`; CV fallback |
+| Frame Description | `src/frame_description.py` | Bridge from raw frame to `FrameDescription` via VLM |
 | Frame Indexer | `src/frame_indexer.py` | SQLite + optional ChromaDB persistence and query layer |
 | Alert Engine | `src/alert_engine.py` | LLM-primary + embedding-similarity fallback hybrid alerting |
 | Security Agent | `src/agent.py` | LangChain-style orchestrator; BM25 + vector RRF hybrid search; Q&A |
 | Live Pipeline | `src/live_pipeline.py` | End-to-end video-to-JSON orchestrator with frame image export |
 | Dashboard | `src/dashboard.py` | Streamlit UI: metrics, alerts, frames, Q&A, reports |
 | Config | `src/config.py` | All tuneable parameters as frozen dataclasses |
-| Detection Utils | `src/detection.py` | Config-driven keyword extraction and activity classification |
 
 ### Database Schema
 
@@ -172,7 +171,6 @@ python -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained
 | :--- | :--- |
 | Process video file | `python src/live_pipeline.py --video <path> --fps 0.5 --export results.json` |
 | Start dashboard | `streamlit run src/dashboard.py` |
-| Run all tests | `pytest tests/ -v` |
 
 ---
 
@@ -288,7 +286,6 @@ All configuration defaults live in `src/config.py` as frozen dataclasses.
 | :--- | :--- | :--- |
 | `model_repo` | `Qwen/Qwen2-VL-2B-Instruct` | HuggingFace model repository |
 | `max_new_tokens` | `256` | Maximum tokens for VLM output |
-| `use_cv_fallback` | `True` | Fall back to CV analysis if VLM fails |
 
 ### LLM Config (`LLMConfig`)
 
@@ -309,20 +306,16 @@ All configuration defaults live in `src/config.py` as frozen dataclasses.
 | `--export <path>` | JSON export location |
 | `--loop` | Loop the video continuously |
 | `--append` | Merge with existing export file |
-| `--no-vlm` | Disable VLM and use CV fallback only |
 
 ---
 
-## Testing & Verification
+## Sanity Verification
 
 ```bash
-# Run unit tests
-pytest tests/ -v
-
 # Component sanity checks
 python -c "from src.frame_indexer import FrameIndexer; db = FrameIndexer('data/test.db'); print('Indexer OK'); db.close()"
 python -c "from src.alert_engine import AlertEngine; engine = AlertEngine(); print('Alert Engine OK')"
-python -c "from src.agent import SecurityAnalystAgent; agent = SecurityAnalystAgent(enable_vlm=False); print('Agent OK'); agent.close()"
+python -c "from src.agent import SecurityAnalystAgent; agent = SecurityAnalystAgent(); print('Agent OK'); agent.close()"
 ```
 
 ---
@@ -335,23 +328,24 @@ flytbaseAI/
 |-- requirements.txt            # Python dependencies
 |-- .gitignore
 |
+|-- prompts/                    # Centralized prompt templates package
+|   |-- __init__.py             # Exposes all prompts
+|   |-- vlm_analysis.py         # Prompt for VLM frame analysis
+|   |-- agent_qa.py             # Prompt for agent-based Q&A
+|   |-- alert_enrichment.py     # Prompt for alert description enrichment
+|   `-- alert_decision.py       # Prompt for LLM-based alert decisions
+|
 |-- src/                        # Core source code
 |   |-- __init__.py
 |   |-- config.py               # Centralized configuration (frozen dataclasses)
-|   |-- detection.py            # Config-driven keyword extraction utilities
 |   |-- video_stream.py         # Thread-safe OpenCV stream reader (MPEG-aware)
 |   |-- vlm_processor.py        # Qwen2-VL image analysis; CLAHE enhancement
-|   |-- frame_description.py    # Frame-to-description bridge; CV fallback
+|   |-- frame_description.py    # Frame-to-description bridge via VLM
 |   |-- frame_indexer.py        # SQLite + ChromaDB persistence layer
 |   |-- alert_engine.py         # LLM-primary + embedding-similarity alert engine
 |   |-- agent.py                # LangChain agent; BM25 + vector RRF hybrid search
 |   |-- live_pipeline.py        # End-to-end video processing pipeline
 |   `-- dashboard.py            # Streamlit monitoring dashboard
-|
-|-- tests/                      # Unit and integration tests
-|   |-- test_indexing.py
-|   |-- test_alerts.py
-|   `-- test_agent.py
 |
 |-- data/                       # Runtime database and generated artifacts
 |   |-- frames.db               # SQLite metadata store
@@ -360,17 +354,6 @@ flytbaseAI/
 `-- sample_data/
     `-- 09172008flight1tape1_5.mpg  # Test MPG video file
 ```
-
----
-
-## Performance & Scalability
-
-| Metric | Value |
-| :--- | :--- |
-| Frame processing time | ~100-500ms per frame (GPU, Qwen2-VL-2B) |
-| Alert decision latency | Sub-200ms (LLM JSON evaluation) |
-| SQLite capacity | Millions of frame rows with indexed queries |
-| ChromaDB vector lookup | < 10ms per similarity query |
 
 ### Scaling Recommendations
 

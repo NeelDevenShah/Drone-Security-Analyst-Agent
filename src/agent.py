@@ -8,64 +8,17 @@ from typing import Dict, List, Any, Optional, Callable, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
+# Ensure project root is in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from frame_indexer import FrameIndexer
 from alert_engine import AlertEngine, Alert
 from vlm_processor import VLMProcessor
 from config import DATABASE_CONFIG, VLM_CONFIG, LLM_CONFIG
-
-
-class BM25:
-    """Pure Python BM25 Searcher for keyword matching"""
-    def __init__(self, corpus: List[Dict[str, Any]], k1: float = 1.5, b: float = 0.75):
-        self.corpus = corpus
-        self.k1 = k1
-        self.b = b
-        self.documents = []
-        self.doc_lens = []
-        
-        for item in corpus:
-            text = f"{item.get('description', '')} {item.get('location', '')} {' '.join(item.get('objects', []))} {item.get('activity_type', '')}"
-            words = [w.lower().strip(",.?!()\"'") for w in text.split() if w]
-            self.documents.append(words)
-            self.doc_lens.append(len(words))
-            
-        self.avgdl = sum(self.doc_lens) / len(self.doc_lens) if self.doc_lens else 0
-        self.doc_count = len(corpus)
-        
-        self.df = {}
-        for doc in self.documents:
-            unique_words = set(doc)
-            for word in unique_words:
-                self.df[word] = self.df.get(word, 0) + 1
-                
-        self.idf = {}
-        for word, freq in self.df.items():
-            self.idf[word] = math.log((self.doc_count - freq + 0.5) / (freq + 0.5) + 1.0)
-
-    def score(self, query: str) -> List[Tuple[float, Dict[str, Any]]]:
-        query_words = [w.lower().strip(",.?!()\"'") for w in query.split() if w]
-        scores = []
-        
-        for idx, doc in enumerate(self.documents):
-            score = 0.0
-            doc_len = self.doc_lens[idx]
-            word_counts = {}
-            for w in doc:
-                word_counts[w] = word_counts.get(w, 0) + 1
-                
-            for qw in query_words:
-                if qw in word_counts:
-                    tf = word_counts[qw]
-                    idf_val = self.idf.get(qw, 0.0)
-                    numerator = tf * (self.k1 + 1)
-                    denominator = tf + self.k1 * (1 - self.b + self.b * (doc_len / self.avgdl))
-                    score += idf_val * (numerator / denominator)
-            scores.append((score, self.corpus[idx]))
-            
-        return scores
+from bm25 import BM25
+from prompts import AGENT_QA_PROMPT
 
 
 @dataclass
@@ -95,12 +48,11 @@ class SecurityAnalystAgent:
         self,
         db_path: str = DATABASE_CONFIG.db_path,
         vlm_model: str = VLM_CONFIG.model_name,
-        vlm_processor=None,
-        enable_vlm: bool = VLM_CONFIG.enabled
+        vlm_processor=None
     ):
         """Initialize the agent with indexer and alert engine"""
         self.indexer = FrameIndexer(db_path)
-        self.vlm_processor = vlm_processor or (VLMProcessor(model_name=vlm_model) if enable_vlm else None)
+        self.vlm_processor = vlm_processor or VLMProcessor(model_name=vlm_model)
         self.alert_engine = AlertEngine(vlm_processor=self.vlm_processor, llm_processor=self)
         self.context = AgentContext()
         self.tools = self._register_tools()
@@ -384,17 +336,7 @@ class SecurityAnalystAgent:
                 alerts_str = ", ".join([f"{a['severity']}: {a['message']}" for a in f['alert_context']]) if f['alert_context'] else "None"
                 context += f"Event {idx+1}: [{f['timestamp']}] Location: {f['location']}, Description: {f['description']}, Objects: {', '.join(f['objects'])}, Activity: {f['activity_type']}, Alerts: {alerts_str}\n"
             
-            prompt = (
-                f"<|im_start|>system\n"
-                f"You are a Drone Security Intelligence Assistant. Based ONLY on the following security events, answer the user's question clearly, concisely, and factually. "
-                f"If the answer cannot be found in the events, state that no matching security events were logged.<|im_end|>\n"
-                f"<|im_start|>user\n"
-                f"=== CONTEXT ===\n"
-                f"{context}\n"
-                f"===============\n\n"
-                f"Question: {question}<|im_end|>\n"
-                f"<|im_start|>assistant\n"
-            )
+            prompt = AGENT_QA_PROMPT.format(context=context, question=question)
             
             try:
                 return self.query_llm(prompt)

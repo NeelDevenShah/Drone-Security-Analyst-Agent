@@ -10,12 +10,16 @@ from datetime import datetime
 import threading
 import queue
 
-try:
-    from .config import VLM_CONFIG
-    from .detection import classify_activity_from_rules, extract_objects_from_keywords
-except ImportError:
-    from config import VLM_CONFIG
-    from detection import classify_activity_from_rules, extract_objects_from_keywords
+import sys
+from pathlib import Path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from config import VLM_CONFIG
 
 
 @dataclass
@@ -32,20 +36,17 @@ class FrameDescription:
 
 class FrameDescriptionGenerator:
     """
-    Generates textual descriptions of video frames.
-    Uses VLM for semantic analysis or fallback CV methods.
+    Generates textual descriptions of video frames using VLM.
     """
 
-    def __init__(self, vlm_processor=None, use_cv_fallback: bool = VLM_CONFIG.use_cv_fallback):
+    def __init__(self, vlm_processor=None):
         """
         Initialize frame description generator
         
         Args:
-            vlm_processor: VLMProcessor instance for real VLM analysis
-            use_cv_fallback: Use computer vision if VLM unavailable
+            vlm_processor: VLMProcessor instance for VLM analysis
         """
         self.vlm_processor = vlm_processor
-        self.use_cv_fallback = use_cv_fallback
         self.frame_cache = {}
 
     def describe_frame(self, frame: np.ndarray, frame_id: int, timestamp: str) -> FrameDescription:
@@ -61,23 +62,16 @@ class FrameDescriptionGenerator:
             FrameDescription with analysis results
         """
         start_time = datetime.now()
-        confidence = VLM_CONFIG.cv_fallback_confidence
         
-        # Try VLM first
+        # Rely strictly on VLM
         if self.vlm_processor and getattr(self.vlm_processor, "is_available", False):
             analysis = self._analyze_with_vlm(frame, frame_id, timestamp)
             description = analysis.description
             objects = analysis.objects
             activity = analysis.activity_type
             confidence = analysis.confidence
-        elif self.use_cv_fallback:
-            description = self._describe_with_cv(frame)
-            objects = self._extract_objects_from_description(description)
-            activity = self._classify_activity(frame, objects)
         else:
-            description = "Frame analysis unavailable"
-            objects = ["scene"]
-            activity = "empty"
+            raise RuntimeError("VLM processor is not available. Real-time analysis requires VLM.")
         
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         
@@ -103,90 +97,7 @@ class FrameDescriptionGenerator:
             "objects": [],
         }
         
-        # Analyze with VLM; fall back to CV description on any failure
-        try:
-            return self.vlm_processor.analyze_frame(frame_data)
-        except Exception as e:
-            print(f"VLM analysis failed, using CV fallback: {e}")
-            description = self._describe_with_cv(frame)
-            objects = self._extract_objects_from_description(description)
-            return type("FallbackAnalysis", (), {
-                "description": description,
-                "objects": objects,
-                "activity_type": self._classify_activity(frame, objects),
-                "confidence": VLM_CONFIG.cv_fallback_confidence,
-            })()
-
-    def _describe_with_cv(self, frame: np.ndarray) -> str:
-        """
-        Fallback: Use computer vision to describe frame.
-        Analyzes motion, edges, colors, and objects.
-        """
-        descriptions = []
-        
-        # Convert to grayscale
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # Detect edges
-        edges = cv2.Canny(gray, 100, 200)
-        edge_percentage = (np.count_nonzero(edges) / edges.size) * 100
-        
-        if edge_percentage > 15:
-            descriptions.append("high-activity scene")
-        elif edge_percentage > 5:
-            descriptions.append("moderate activity")
-        else:
-            descriptions.append("low-activity scene")
-        
-        # Detect contours (objects)
-        contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if len(contours) > 20:
-            descriptions.append("multiple objects detected")
-        elif len(contours) > 5:
-            descriptions.append("several objects visible")
-        elif len(contours) > 0:
-            descriptions.append("one or two objects")
-        else:
-            descriptions.append("empty scene")
-        
-        # Color analysis
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        
-        # Green channel (grass, vegetation)
-        green = frame[:, :, 1]
-        green_percentage = (np.count_nonzero(green > 100) / green.size) * 100
-        if green_percentage > 30:
-            descriptions.append("outdoor/grass area")
-        
-        # Red channel (vehicles, anomalies)
-        red = frame[:, :, 2]
-        red_percentage = (np.count_nonzero(red > 150) / red.size) * 100
-        if red_percentage > 20:
-            descriptions.append("red/warm tones present")
-        
-        # Brightness analysis
-        brightness = np.mean(gray)
-        if brightness > 180:
-            descriptions.append("well-lit, bright")
-        elif brightness < 50:
-            descriptions.append("dark/low light")
-        else:
-            descriptions.append("normal lighting")
-        
-        # Motion detection (compare with previous frame if available)
-        desc = ", ".join(descriptions)
-        return f"Scene with {desc}"
-
-    def _extract_objects_from_description(self, description: str) -> List[str]:
-        """
-        Extract object categories from fallback description text.
-        """
-        return extract_objects_from_keywords(description)
-
-    def _classify_activity(self, frame: np.ndarray, objects: List[str]) -> str:
-        """Classify fallback activity from configured rules."""
-        return classify_activity_from_rules(objects)
+        return self.vlm_processor.analyze_frame(frame_data)
 
     def describe_frames_batch(self, frames: List[Dict[str, Any]]) -> List[FrameDescription]:
         """
@@ -281,7 +192,9 @@ if __name__ == "__main__":
     cv2.circle(test_frame, (500, 200), 50, (100, 150, 50), -1)
     
     # Generate description
-    generator = FrameDescriptionGenerator(use_cv_fallback=True)
+    from vlm_processor import VLMProcessor
+    vlm = VLMProcessor()
+    generator = FrameDescriptionGenerator(vlm_processor=vlm)
     description = generator.describe_frame(test_frame, 1, datetime.now().isoformat())
     
     print(f"Frame ID: {description.frame_id}")

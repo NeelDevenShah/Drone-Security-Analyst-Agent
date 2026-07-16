@@ -9,8 +9,13 @@ from typing import Optional, List, Dict, Any
 import threading
 from datetime import datetime
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+# Ensure project root and src are in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from video_stream import VideoStreamProcessor, LocalVideoProcessor
 from frame_description import RealTimeFrameAnalyzer, FrameDescriptionGenerator
@@ -36,8 +41,7 @@ class LiveSecurityAnalysisPipeline:
         db_path: str = PIPELINE_CONFIG.db_path,
         vlm_processor=None,
         fps_limit: float = STREAM_CONFIG.fps_limit,
-        loop: bool = STREAM_CONFIG.loop,
-        use_vlm: bool = VLM_CONFIG.enabled
+        loop: bool = STREAM_CONFIG.loop
     ):
         """
         Initialize live analysis pipeline
@@ -51,13 +55,13 @@ class LiveSecurityAnalysisPipeline:
         self.video_source = video_source
         self.fps_limit = fps_limit
         self.loop = loop
-        self.use_vlm = use_vlm
+        self.use_vlm = True
         self.is_running = False
         self.completed = False
         self.db_path = db_path
         
         # Initialize components
-        if self.use_vlm and vlm_processor is None:
+        if vlm_processor is None:
             vlm_processor = VLMProcessor(model_name=VLM_CONFIG.model_name)
 
         self.vlm_processor = vlm_processor
@@ -66,7 +70,7 @@ class LiveSecurityAnalysisPipeline:
         self.agent = SecurityAnalystAgent(
             db_path=db_path,
             vlm_processor=self.vlm_processor,
-            enable_vlm=self.use_vlm
+            enable_vlm=True
         )
         self.indexer = FrameIndexer(db_path=db_path)
         
@@ -242,9 +246,8 @@ class LiveSecurityAnalysisPipeline:
             "video_source": self.video_source,
             "loop": self.loop,
             "completed": self.completed,
-            "vlm_enabled": self.use_vlm,
             "vlm_available": bool(self.vlm_processor and self.vlm_processor.is_available),
-            "vlm_model": self.vlm_processor.model_name if self.vlm_processor else "cv_fallback",
+            "vlm_model": self.vlm_processor.model_name if self.vlm_processor else "unknown",
             "frames_processed": self.frames_processed,
             "total_alerts": len(self.alerts_generated),
             "high_alerts": len([a for a in self.alerts_generated if a.severity in ["HIGH", "CRITICAL"]]),
@@ -456,12 +459,8 @@ def main():
         default=STREAM_CONFIG.loop,
         help=f"Loop the input video continuously until interrupted (default: {STREAM_CONFIG.loop})"
     )
-    parser.add_argument(
-        "--vlm",
-        action=argparse.BooleanOptionalAction,
-        default=VLM_CONFIG.enabled,
-        help=f"Use configured VLM for semantic frame descriptions (default: {VLM_CONFIG.enabled})"
-    )
+
+
     parser.add_argument(
         "--append",
         action=argparse.BooleanOptionalAction,
@@ -481,8 +480,7 @@ def main():
         video_source=args.video,
         db_path=args.db,
         fps_limit=args.fps,
-        loop=args.loop,
-        use_vlm=args.vlm
+        loop=args.loop
     )
     
     try:

@@ -9,17 +9,9 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
 
-try:
-    import chromadb
-    from sentence_transformers import SentenceTransformer
-except ImportError:
-    chromadb = None
-    SentenceTransformer = None
-
-try:
-    from .config import DATABASE_CONFIG
-except ImportError:
-    from config import DATABASE_CONFIG
+import chromadb
+from sentence_transformers import SentenceTransformer
+from config import DATABASE_CONFIG
 
 
 class FrameIndexer:
@@ -43,15 +35,14 @@ class FrameIndexer:
         self.chroma_collection = None
         self.embed_model = None
         
-        if chromadb is not None and SentenceTransformer is not None:
-            try:
-                persist_dir = str(Path(self.db_path).parent / "chroma_db")
-                self.chroma_client = chromadb.PersistentClient(path=persist_dir)
-                self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
-                self.chroma_collection = self.chroma_client.get_or_create_collection("drone_frames")
-                print("✓ Initialized ChromaDB & SentenceTransformer for FrameIndexer")
-            except Exception as e:
-                print(f"⚠ Failed to initialize ChromaDB/SentenceTransformer: {e}")
+        try:
+            persist_dir = str(Path(self.db_path).parent / "chroma_db")
+            self.chroma_client = chromadb.PersistentClient(path=persist_dir)
+            self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+            self.chroma_collection = self.chroma_client.get_or_create_collection("drone_frames")
+            print("✓ Initialized ChromaDB & SentenceTransformer for FrameIndexer")
+        except Exception as e:
+            print(f"⚠ Failed to initialize ChromaDB/SentenceTransformer: {e}")
 
     def _initialize_database(self):
         """Create SQLite tables for frame storage"""

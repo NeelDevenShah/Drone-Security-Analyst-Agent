@@ -8,6 +8,15 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+import sys
+# Ensure project root and src are in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
 # Import our components
 from frame_indexer import FrameIndexer
 from alert_engine import AlertEngine

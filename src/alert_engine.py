@@ -1,20 +1,23 @@
 """
 Alert Engine: Hybrid alert system combining rules and LLM-based analysis
 """
+import sys
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-try:
-    from sentence_transformers import SentenceTransformer, util
-except ImportError:
-    SentenceTransformer = None
-    util = None
+# Ensure project root and src are in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
-try:
-    from .config import ALERT_RULE_CONFIG
-except ImportError:
-    from config import ALERT_RULE_CONFIG
+from sentence_transformers import SentenceTransformer, util
+from config import ALERT_RULE_CONFIG
+from prompts import ALERT_ENRICHMENT_PROMPT, ALERT_DECISION_PROMPT
 
 
 @dataclass
@@ -135,19 +138,13 @@ class AlertEngine:
         if alerts and self.llm_processor is not None and getattr(self.llm_processor, "llm", None) is not None:
             for alert in alerts:
                 try:
-                    enrich_prompt = (
-                        f"<|im_start|>system\n"
-                        f"You are a drone security analyst. Write a single clear, factual alert message "
-                        f"(1-2 sentences, no speculation) for the following confirmed security event.<|im_end|>\n"
-                        f"<|im_start|>user\n"
-                        f"Alert type: {alert.alert_type}\n"
-                        f"Location: {alert.location}\n"
-                        f"Timestamp: {alert.timestamp}\n"
-                        f"VLM description: {frame.get('description', '')}\n"
-                        f"Detected objects: {', '.join(frame.get('objects', []))}\n"
-                        f"Activity: {frame.get('activity_type', '')}\n"
-                        f"Write only the alert message text.<|im_end|>\n"
-                        f"<|im_start|>assistant\n"
+                    enrich_prompt = ALERT_ENRICHMENT_PROMPT.format(
+                        alert_type=alert.alert_type,
+                        location=alert.location,
+                        timestamp=alert.timestamp,
+                        description=frame.get('description', ''),
+                        objects=', '.join(frame.get('objects', [])),
+                        activity=frame.get('activity_type', '')
                     )
                     enriched = self.llm_processor.query_llm(enrich_prompt).strip()
                     if enriched and len(enriched) > 10:
@@ -181,24 +178,10 @@ class AlertEngine:
         if self.llm_processor is not None and getattr(self.llm_processor, "llm", None) is not None:
             time_of_day = "night (off-hours)" if hour in (23, 0, 1, 2, 3, 4, 5, 6) else f"daytime (hour {hour})"
 
-            prompt = (
-                f"<|im_start|>system\n"
-                f"You are a conservative drone security alert system. "
-                f"Analyze the scene and decide if a security alert is needed. "
-                f"Be strict: normal daytime activity (vehicles, people going about their day, "
-                f"buildings, roads, fields) does NOT warrant an alert. "
-                f"Only flag genuine threats: a person loitering at night, a perimeter breach, "
-                f"or a suspicious vehicle during off-hours.\n"
-                f"Return ONLY valid JSON. If no threat: {{\"alert\": false}}\n"
-                f"If threat: {{\"alert\": true, \"alert_type\": \"loitering_midnight|perimeter_breach|night_vehicle\", "
-                f"\"severity\": \"LOW|MEDIUM|HIGH|CRITICAL\", \"threat_score\": 1-10, "
-                f"\"message\": \"one sentence factual description of the threat\"}}<|im_end|>\n"
-                f"<|im_start|>user\n"
-                f"Time: {time_of_day}\n"
-                f"Location: {location}\n"
-                f"Scene (from drone camera): {description}\n"
-                f"<|im_end|>\n"
-                f"<|im_start|>assistant\n"
+            prompt = ALERT_DECISION_PROMPT.format(
+                time_of_day=time_of_day,
+                location=location,
+                description=description
             )
 
             try:

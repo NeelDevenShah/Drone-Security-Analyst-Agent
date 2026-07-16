@@ -4,7 +4,16 @@ from pathlib import Path
 from typing import Dict, Tuple
 
 
+import sys
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from prompts import VLM_ANALYSIS_PROMPT
 
 
 @dataclass(frozen=True)
@@ -56,28 +65,6 @@ class DetectionConfig:
         "person",
         "empty",
     )
-    fallback_object: str = "scene"
-    fallback_activity: str = "empty"
-    cv_fallback_keywords: Dict[str, Tuple[str, ...]] = field(default_factory=lambda: {
-        "vehicle": (
-            "truck", "trucks", "car", "cars", "sedan", "sedans",
-            "vehicle", "vehicles", "automobile", "automobiles", "van", "vans",
-            "bus", "buses", "pickup", "pickups"
-        ),
-        "person": (
-            "person", "people", "human", "humans", "man", "men",
-            "woman", "women", "pedestrian", "pedestrians", "individual"
-        ),
-        "building": ("building", "buildings", "structure", "house", "garage", "warehouse"),
-        "gate": ("gate", "fence", "barrier", "entrance", "door"),
-        "road": ("road", "street", "path", "pavement", "asphalt", "driveway"),
-        "nature": ("grass", "vegetation", "tree", "trees", "outdoor", "field"),
-    })
-    cv_fallback_activity_rules: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
-        ("vehicle+person", ("vehicle", "person")),
-        ("vehicle", ("vehicle",)),
-        ("person", ("person",)),
-    )
 
 
 @dataclass(frozen=True)
@@ -86,19 +73,10 @@ class VLMConfig:
     enabled: bool = True
     model_name: str = "qwen2-vl"
     model_repo: str = "Qwen/Qwen2-VL-2B-Instruct"
-    # Prompt for Qwen2-VL requesting structured JSON output
-    prompt: str = (
-        "Analyze this drone security camera image. Even if the image contains dark regions, low light, or shadows, "
-        "examine it carefully to identify any visible elements. Provide a JSON object with the following keys:\n"
-        "1. \"description\": A clear, concise natural language description of the scene from a security perspective (focusing on people, vehicles, perimeter areas, and their activities).\n"
-        "2. \"objects\": A list containing any of these specific categories that are present: \"vehicle\", \"person\", \"building\", \"gate\", \"road\", \"nature\".\n"
-        "3. \"activity_type\": A single category representing the main activity: \"vehicle+person\" (if both are interacting), \"vehicle\" (if only vehicles), \"person\" (if only people), or \"empty\".\n"
-        "Return ONLY the raw JSON object, no Markdown blocks or extra text."
-    )
+    # Prompt for Qwen2-VL requesting structured JSON output loaded from prompts/
+    prompt: str = VLM_ANALYSIS_PROMPT
     max_new_tokens: int = 256
-    use_cv_fallback: bool = True
     simulated_confidence: float = 0.95
-    cv_fallback_confidence: float = 0.65
     vlm_confidence: float = 0.85
 
 
