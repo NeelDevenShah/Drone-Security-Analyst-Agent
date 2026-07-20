@@ -69,8 +69,7 @@ class LiveSecurityAnalysisPipeline:
         self.frame_generator = FrameDescriptionGenerator(vlm_processor=self.vlm_processor)
         self.agent = SecurityAnalystAgent(
             db_path=db_path,
-            vlm_processor=self.vlm_processor,
-            enable_vlm=True
+            vlm_processor=self.vlm_processor
         )
         self.indexer = FrameIndexer(db_path=db_path)
         
