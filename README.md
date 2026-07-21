@@ -2,41 +2,22 @@
 
 An intelligent AI-powered security monitoring system that analyzes drone video feeds in real-time to detect threats, identify objects, and generate actionable security alerts. The system uses Qwen2-VL for scene understanding, hybrid spatial-temporal memory (SQLite + ChromaDB), and Qwen2.5-1.5B-Instruct for contextual threat validation and natural language Q&A.
 
+> [!IMPORTANT]
+> **Project Deliverables:**
+> - 📄 **[Detailed Project Report (PDF)](assets/FlytBase%20Report%20Neel%20Shah.docx.pdf)**: Detailed report covering design decisions, model selections, database schemas, prompt engineering, and visual results.
+> - 📂 **All diagrams and screenshots** are available under the [`assets/`](assets) directory.
+
 ---
 
 ## System Overview
 
-```
-        Drone Video Stream (MP4 / RTSP)
-                       |
-                       v
-    Frame Extraction & Telemetry Association
-                       |
-                       v
-          VLM Processor (Qwen2-VL-2B)
-      (Generates descriptions & objects)
-                       |
-                       v
-    Spatial-Temporal Memory & Hybrid Indexing
-          .----------------------------.
-          |                            |
-          v                            v
-      SQLite DB                   ChromaDB
-    (Metadata Log)          (Vector Embeddings)
-          .----------------------------.
-                       |
-                       v
-        Alert Engine (Rules + Qwen2.5 LLM)
-      (Checks heuristics & detects patterns)
-                       |
-                       v
-    LangChain Security Agent (Orchestration)
-                       |
-          .------------+------------.
-          |                         |
-          v                         v
- Streamlit Dashboard          Automated Reports
-```
+Below are the detailed system architecture and frame processing pipeline diagrams.
+
+### System Architecture
+<img src="assets/diagrams/System%20Architecture%20Diagram.png" width="800" alt="System Architecture Diagram">
+
+### Frame Processing Pipeline
+<img src="assets/diagrams/Frame%20Processing%20Pipeline%20Flowchart.png" width="800" alt="Frame Processing Pipeline Flowchart">
 
 ---
 
@@ -112,6 +93,8 @@ Contextual checks (always run):
     - Sustained dwell time at a single location (configurable threshold)
 ```
 
+<img src="assets/diagrams/Alert%20Engine%20Logic%20Flowchart.png" width="600" alt="Alert Engine Logic Flowchart">
+
 ### Q&A Retrieval (Hybrid Search)
 
 ```
@@ -124,6 +107,8 @@ User question
     |
     Top-10 frames passed as context to Qwen2.5 for answer generation
 ```
+
+<img src="assets/diagrams/Q&A%20Retrieval%20and%20Hybrid%20Search%20Flowchart.png" width="600" alt="Q&A Retrieval and Hybrid Search Flowchart">
 
 ---
 
@@ -262,6 +247,39 @@ Use the sidebar to load a `results.json` exported by the pipeline, then:
 - Use the **Alerts** tab to review alerts with frame image proof
 - Use the **Q&A** tab to ask natural language questions with source citations
 - Use the **Summary Report** tab to generate and download a shift report
+
+#### Dashboard Screenshots Gallery
+
+<details>
+<summary>📸 Click to view Dashboard & Navigation Screenshots</summary>
+
+| Screenshot | Screenshot |
+|---|---|
+| <img src="assets/application_screenshots/2026-06-14_19-12_1.png" width="450" alt="Dashboard 1"> | <img src="assets/application_screenshots/2026-06-14_19-12_2.png" width="450" alt="Dashboard 2"> |
+| <img src="assets/application_screenshots/2026-06-14_19-12_3.png" width="450" alt="Dashboard 3"> | <img src="assets/application_screenshots/2026-06-14_19-12_4.png" width="450" alt="Dashboard 4"> |
+
+</details>
+
+<details>
+<summary>📸 Click to view Frame Analysis & Alert Proofs</summary>
+
+| Screenshot | Screenshot |
+|---|---|
+| <img src="assets/application_screenshots/2026-06-14_19-13.png" width="450" alt="Alerts 1"> | <img src="assets/application_screenshots/2026-06-14_19-13_1.png" width="450" alt="Alerts 2"> |
+| <img src="assets/application_screenshots/2026-06-14_19-13_2.png" width="450" alt="Alerts 3"> | <img src="assets/application_screenshots/2026-06-14_19-13_3.png" width="450" alt="Alerts 4"> |
+| <img src="assets/application_screenshots/2026-06-14_19-13_4.png" width="450" alt="Alerts 5"> | |
+
+</details>
+
+<details>
+<summary>📸 Click to view Q&A Interface & Summary Reports</summary>
+
+| Screenshot | Screenshot |
+|---|---|
+| <img src="assets/application_screenshots/2026-06-14_19-16.png" width="450" alt="QA 1"> | <img src="assets/application_screenshots/2026-06-14_19-16_1.png" width="450" alt="QA 2"> |
+| <img src="assets/application_screenshots/2026-06-14_19-16_2.png" width="450" alt="QA 3"> | |
+
+</details>
 
 ---
 
