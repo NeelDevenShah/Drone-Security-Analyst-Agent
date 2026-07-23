@@ -120,7 +120,7 @@ Python 3.9+ is required. Clone the repository and initialize a virtual environme
 
 ```bash
 git clone <repo-url>
-cd flytbaseAI
+cd Drone-Security-Analyst-Agent
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
