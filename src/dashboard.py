@@ -8,10 +8,132 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+import sys
+# Ensure project root and src are in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
 # Import our components
 from frame_indexer import FrameIndexer
 from alert_engine import AlertEngine
 from agent import SecurityAnalystAgent
+
+
+def load_from_results_json(path: str):
+    """
+    Load pipeline output from a results.json (or simulated_frames.json) file.
+
+    Handles two formats:
+      - New pipeline format: {"summary": {...}, "frames": [...], "all_alerts": [...]}
+      - Old flat-list format: [{"frame_id": ..., ...}, ...]
+    
+    Returns a normalised dict {"frames": [...], "all_alerts": [...], "summary": {...}}
+    or None if the file does not exist.
+    """
+    results_file = Path(path)
+    if not results_file.exists():
+        return None
+    with open(results_file) as f:
+        data = json.load(f)
+    if isinstance(data, list):
+        # Old simulated_frames.json – flat list of frame dicts
+        return {"frames": data, "all_alerts": [], "summary": {}}
+    # New results.json from live_pipeline.export_results()
+    return {
+        "frames":     data.get("frames", []),
+        "all_alerts": data.get("all_alerts", []),
+        "summary":    data.get("summary", {}),
+    }
+
+
+def import_results_into_agent(agent, results: dict) -> dict:
+    """
+    Import frames and alerts from a pre-computed results dict into the agent's
+    indexer WITHOUT re-running VLM or alert analysis (the JSON already has them).
+    Returns a session-compatible results dict.
+    """
+    from config import PIPELINE_CONFIG
+    indexer = agent.indexer
+    frames = results["frames"]
+
+    # CRITICAL: wipe stale data from previous runs first
+    indexer.clear_all()
+
+    imported_frames = 0
+    imported_alerts = 0
+    frame_image_paths = {}  # frame_id → image file path
+
+    for frame in frames:
+        fid = frame.get("frame_id")
+        if fid is None:
+            continue
+
+        # Track saved image path (None if the frame wasn't sampled/saved)
+        img_path = frame.get("image_path")
+        if img_path:
+            frame_image_paths[fid] = img_path
+
+        indexer.store_frame(
+            frame_id=fid,
+            timestamp=frame.get("timestamp", ""),
+            location=frame.get("location", PIPELINE_CONFIG.default_location),
+            description=frame.get("description", ""),
+            objects=frame.get("objects", []),
+            activity_type=frame.get("activity_type", "empty"),
+            threat_score=0,
+            telemetry=frame.get("telemetry"),
+        )
+        imported_frames += 1
+
+        # Import per-frame alerts (embedded in the frame record)
+        for alert in frame.get("alerts", []):
+            try:
+                indexer.store_alert(
+                    frame_id=fid,
+                    alert_type=alert.get("alert_type", "unknown"),
+                    severity=alert.get("severity", "LOW"),
+                    threat_score=alert.get("threat_score", 0),
+                    message=alert.get("message", ""),
+                )
+                imported_alerts += 1
+            except Exception:
+                pass
+
+    # Persist image path map in session state for the UI to use
+    import streamlit as st
+    st.session_state.frame_image_paths = frame_image_paths
+
+    # Build session results compatible with the rest of the dashboard
+    loaded_alerts = [
+        {
+            "timestamp":    a.get("timestamp", ""),
+            "location":     a.get("location", ""),
+            "severity":     a.get("severity", "LOW"),
+            "message":      a.get("message", ""),
+            "alert_type":   a.get("alert_type", ""),
+            "threat_score": a.get("threat_score", 0),
+            "frame_id":     frame.get("frame_id"),
+            "frame_image":  a.get("frame_image"),
+        }
+        for frame in frames for a in frame.get("alerts", [])
+    ]
+
+    summary_obj = results.get("summary", {})
+    return {
+        "frames_processed": imported_frames,
+        "alerts_generated": loaded_alerts,
+        "patterns_detected": [],
+        "summary": (
+            summary_obj.get("summary", str(summary_obj))
+            if isinstance(summary_obj, dict) else str(summary_obj)
+        ),
+    }
+
+
 
 
 def initialize_session_state():
@@ -20,15 +142,8 @@ def initialize_session_state():
         st.session_state.agent = SecurityAnalystAgent()
     if 'frames_processed' not in st.session_state:
         st.session_state.frames_processed = False
-
-
-def load_simulated_data():
-    """Load simulated frames from JSON"""
-    frames_file = Path("/home/neel/Desktop/flytbaseAI/data/simulated_frames.json")
-    if frames_file.exists():
-        with open(frames_file) as f:
-            return json.load(f)
-    return []
+    if 'results_json_path' not in st.session_state:
+        st.session_state.results_json_path = "results.json"
 
 
 def main():
@@ -50,20 +165,34 @@ def main():
     # Sidebar controls
     with st.sidebar:
         st.header("Controls")
-        
-        if st.button("🔄 Load & Process Frames", key="process_btn"):
-            with st.spinner("Processing frames..."):
-                frames = load_simulated_data()
-                if frames:
-                    results = st.session_state.agent.process_frames(frames)
-                    st.session_state.frames_processed = True
-                    st.session_state.results = results
-                    st.success(f"✓ Processed {results['frames_processed']} frames")
+
+        # results.json loader
+        st.subheader("Load Pipeline Results")
+        results_path = st.text_input(
+            "results.json path",
+            value=st.session_state.results_json_path,
+            key="results_path_input",
+            help="Path to the results.json exported by the pipeline"
+        )
+        st.session_state.results_json_path = results_path
+
+        if st.button("📂 Load from results.json", key="load_results_btn"):
+            with st.spinner("Loading results.json …"):
+                data = load_from_results_json(results_path)
+                if data is None:
+                    st.error(f"File not found: {results_path}")
+                elif not data["frames"]:
+                    st.error("results.json contains no frames.")
                 else:
-                    st.error("No simulated frames found")
-        
-        st.markdown("---")
-        
+                    results = import_results_into_agent(st.session_state.agent, data)
+                    st.session_state.results = results
+                    st.session_state.frames_processed = True
+                    st.success(
+                        f"✓ Loaded {results['frames_processed']} frames "
+                        f"and {len(results['alerts_generated'])} alerts from {results_path}"
+                    )
+
+
         # View options
         view_mode = st.radio(
             "Select View",
@@ -72,7 +201,7 @@ def main():
     
     # Main content area
     if not st.session_state.frames_processed:
-        st.info("👈 Click 'Load & Process Frames' in the sidebar to start")
+        st.info("Load a results.json file using the sidebar to get started.")
         return
     
     results = st.session_state.results
@@ -178,72 +307,109 @@ def show_dashboard(results):
 
 
 def show_frames():
-    """Display all processed frames"""
+    """Display all processed frames with thumbnails"""
     st.header("📹 Frame Index")
-    
+
     indexer = FrameIndexer()
     frames = indexer.get_frames_for_shift_summary()
     indexer.close()
-    
+
+    frame_image_paths = getattr(st.session_state, "frame_image_paths", {})
+
     if frames:
-        # Convert to dataframe
+        # Summary table
         df_frames = pd.DataFrame([
             {
                 'ID': f['frame_id'],
                 'Time': f['timestamp'],
                 'Location': f['location'],
                 'Activity': f['activity_type'],
-                'Description': f['description'][:50] + "..." if len(f['description']) > 50 else f['description'],
-                'Objects': ', '.join(f['objects'])
+                'Description': f['description'][:60] + "..." if len(f['description']) > 60 else f['description'],
+                'Objects': ', '.join(f['objects']),
+                'Has Image': '✅' if frame_image_paths.get(f['frame_id']) else '—',
             }
             for f in frames
         ])
-        
         st.dataframe(df_frames, use_container_width=True, hide_index=True)
+
+        # Thumbnail gallery for frames that have saved images
+        saved = [(f, frame_image_paths[f['frame_id']]) for f in frames if frame_image_paths.get(f['frame_id'])]
+        if saved:
+            st.markdown("---")
+            st.subheader(f"📸 Saved Frame Images ({len(saved)} frames)")
+            cols = st.columns(3)
+            for idx, (frame, img_path) in enumerate(saved):
+                from pathlib import Path as _Path
+                with cols[idx % 3]:
+                    if _Path(img_path).exists():
+                        st.image(
+                            img_path,
+                            caption=f"#{frame['frame_id']} · {frame['timestamp'][:19]}\n{frame['location']} · {frame['activity_type']}",
+                            use_container_width=True
+                        )
+                    else:
+                        st.caption(f"Frame #{frame['frame_id']}: image missing")
+        else:
+            st.info("No frame images were saved during this pipeline run (only alert frames and sampled frames are saved).")
     else:
         st.info("No frames indexed yet")
 
 
+
+
 def show_alerts():
-    """Display all alerts"""
+    """Display all alerts with frame image proof"""
     st.header("🚨 All Alerts")
-    
+
     indexer = FrameIndexer()
     all_alerts = indexer.get_all_alerts()
     indexer.close()
-    
+
+    # Image path lookup from session state (populated when results.json is loaded)
+    frame_image_paths = getattr(st.session_state, "frame_image_paths", {})
+
     if all_alerts:
-        # Filter by severity
         col1, col2 = st.columns([3, 1])
-        
         with col2:
             filter_severity = st.multiselect(
                 "Filter by Severity",
                 ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
                 default=["CRITICAL", "HIGH", "MEDIUM", "LOW"]
             )
-        
         with col1:
             st.write("")
-        
-        # Display alerts
+
         filtered_alerts = [a for a in all_alerts if a['severity'] in filter_severity]
-        
+
+        severity_icon = {
+            'CRITICAL': '🔴', 'HIGH': '🟠', 'MEDIUM': '🟡', 'LOW': '🟢'
+        }
+
         for alert in filtered_alerts:
-            severity_color = {
-                'CRITICAL': '🔴',
-                'HIGH': '🟠',
-                'MEDIUM': '🟡',
-                'LOW': '🟢'
-            }
-            
-            with st.expander(f"{severity_color[alert['severity']]} {alert['severity']} - {alert['timestamp']}"):
-                st.write(f"**Location**: {alert['location']}")
-                st.write(f"**Type**: {alert['alert_type']}")
-                st.write(f"**Threat Score**: {alert['threat_score']}/10")
-                st.write(f"**Message**: {alert['message']}")
+            icon = severity_icon.get(alert['severity'], '⚪')
+            with st.expander(f"{icon} {alert['severity']} — {alert['timestamp']}"):
+                col_info, col_img = st.columns([2, 1])
+                with col_info:
+                    st.write(f"**Location**: {alert.get('location', 'N/A')}")
+                    st.write(f"**Type**: {alert.get('alert_type', 'N/A')}")
+                    st.write(f"**Threat Score**: {alert.get('threat_score', '?')}/10")
+                    st.write(f"**Message**: {alert['message']}")
+                    if alert.get('description'):
+                        st.caption(f"Frame: {alert['description'][:120]}")
+                with col_img:
+                    fid = alert.get('frame_id')
+                    img_path = frame_image_paths.get(fid) if fid else None
+                    if img_path:
+                        from pathlib import Path as _Path
+                        if _Path(img_path).exists():
+                            st.image(img_path, caption=f"Frame #{fid}", use_container_width=True)
+                        else:
+                            st.caption(f"📷 Image not found:\n{img_path}")
+                    else:
+                        st.caption("📷 No frame image saved for this alert")
     else:
         st.info("No alerts generated")
+
 
 
 def show_query_interface():
@@ -289,6 +455,7 @@ def show_query_interface():
     
     # Display results
     if 'results' in locals() and results:
+        enriched_results = [st.session_state.agent._enrich_frame_with_alert_context(r) for r in results]
         st.subheader("Query Results")
         df_results = pd.DataFrame([
             {
@@ -296,9 +463,10 @@ def show_query_interface():
                 'Location': r['location'],
                 'Activity': r['activity_type'],
                 'Description': r['description'][:40] + "...",
-                'Objects': ', '.join(r['objects'])
+                'Objects': ', '.join(r['objects']),
+                'Alerts': ', '.join([f"{a['severity']}: {a['message']}" for a in r.get('alert_context', [])]) if r.get('alert_context') else "None"
             }
-            for r in results
+            for r in enriched_results
         ])
         st.dataframe(df_results, use_container_width=True, hide_index=True)
     elif 'results' in locals():
@@ -308,25 +476,78 @@ def show_query_interface():
 
 
 def show_qa_interface():
-    """Q&A interface for user questions"""
+    """Q&A interface with cited source frames and images"""
     st.header("❓ Ask Questions About the Shift")
-    
+
     agent = st.session_state.agent
-    
+    frame_image_paths = getattr(st.session_state, "frame_image_paths", {})
+
     st.write("Examples:")
     st.write("- How many vehicles detected?")
     st.write("- What about the blue truck?")
     st.write("- What objects were in the video?")
     st.write("- How many people detected?")
-    
+
     question = st.text_input("Ask a question:")
-    
+
     if question:
-        answer = agent.answer_question(question)
-        
+        with st.spinner("Searching security logs…"):
+            cited_frames = agent.query_frame_index(question)
+            answer = agent.answer_question(question)
+
         st.markdown("---")
+
         st.subheader("Answer")
         st.write(answer)
+
+        if cited_frames:
+            st.markdown("---")
+            st.subheader(f"📎 Source Frames ({len(cited_frames)} citations)")
+            st.caption("These are the frames the answer was derived from.")
+
+            for idx, frame in enumerate(cited_frames):
+                fid = frame.get("frame_id")
+                img_path = frame_image_paths.get(fid)
+                alerts = frame.get("alert_context", [])
+
+                with st.expander(
+                    f"Citation {idx + 1} — Frame #{fid} · {frame.get('timestamp', '')[:19]} · {frame.get('location', '')}",
+                    expanded=(idx == 0)
+                ):
+                    col_img, col_meta = st.columns([1, 2])
+
+                    with col_img:
+                        if img_path:
+                            from pathlib import Path as _Path
+                            if _Path(img_path).exists():
+                                st.image(img_path, caption=f"Frame #{fid}", use_container_width=True)
+                            else:
+                                st.caption(f"📷 Image file missing:\n`{img_path}`")
+                        else:
+                            st.info("📷 No image saved for this frame")
+
+                    with col_meta:
+                        st.markdown(f"**📍 Location:** {frame.get('location', 'N/A')}")
+                        st.markdown(f"**🏃 Activity:** {frame.get('activity_type', 'N/A')}")
+                        st.markdown(f"**🔍 Objects:** {', '.join(frame.get('objects', [])) or 'none'}")
+                        st.markdown("**📝 Description:**")
+                        st.write(frame.get('description', ''))
+
+                        if alerts:
+                            st.markdown("**🚨 Alerts on this frame:**")
+                            for a in alerts:
+                                sev_icon = {
+                                    'CRITICAL': '🔴', 'HIGH': '🟠',
+                                    'MEDIUM': '🟡', 'LOW': '🟢'
+                                }.get(a.get('severity', ''), '⚪')
+                                st.markdown(
+                                    f"{sev_icon} **{a.get('severity')}** — "
+                                    f"{a.get('message', '')} "
+                                    f"*(threat: {a.get('threat_score', '?')}/10)*"
+                                )
+        else:
+            st.info("No matching frames found for this query.")
+
 
 
 def show_summary_report(results):

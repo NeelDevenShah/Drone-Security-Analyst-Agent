@@ -1,9 +1,23 @@
 """
 Alert Engine: Hybrid alert system combining rules and LLM-based analysis
 """
+import sys
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+# Ensure project root and src are in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from sentence_transformers import SentenceTransformer, util
+from config import ALERT_RULE_CONFIG
+from prompts import ALERT_ENRICHMENT_PROMPT, ALERT_DECISION_PROMPT
 
 
 @dataclass
@@ -26,101 +40,216 @@ class AlertEngine:
     LLM Layer: Contextual analysis using frame history
     """
 
-    def __init__(self):
+    def __init__(self, config=ALERT_RULE_CONFIG, vlm_processor=None, llm_processor=None):
+        self.config = config
         self.alerts: List[Alert] = []
         self.frame_history: Dict[int, Dict[str, Any]] = {}
+        self.vlm_processor = vlm_processor
+        self.llm_processor = llm_processor
+        
+        self.embed_model = None
+        if SentenceTransformer is not None:
+            try:
+                self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+                print("✓ Initialized SentenceTransformer in AlertEngine")
+            except Exception as e:
+                print(f"⚠ Failed to load SentenceTransformer in AlertEngine: {e}")
 
     def add_frame_to_history(self, frame: Dict[str, Any]):
         """Add frame to history for pattern detection"""
         self.frame_history[frame['frame_id']] = frame
 
+    def _get_frame_hour(self, timestamp: str) -> int:
+        """Extract hour from a timestamp string with graceful fallback."""
+        if not timestamp:
+            return 0
+
+        normalized_timestamp = timestamp.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized_timestamp).hour
+        except (ValueError, TypeError):
+            pass
+
+        for separator in (" ", "T"):
+            if separator in timestamp:
+                timestamp = timestamp.split(separator, 1)[1]
+                break
+
+        try:
+            return int(timestamp.split(":", 1)[0])
+        except (ValueError, IndexError):
+            return 0
+
+    def _loads_json_object(self, text: str) -> Optional[Dict[str, Any]]:
+        """Load the first JSON object from a model response."""
+        if not text:
+            return None
+        import json
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            pass
+
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+
+        try:
+            parsed = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            return None
+
+        return parsed if isinstance(parsed, dict) else None
+
     def analyze_frame(self, frame: Dict[str, Any], previous_frames: List[Dict[str, Any]] = None) -> List[Alert]:
         """
         Analyze a frame and generate alerts if needed.
-        
+
+        Detection order:
+          1. Rule-based checks (hour + activity_type + location keywords)
+          2. Embedding-similarity boost (secondary, for richer descriptions)
+        The LLM is used only to *enrich* alert messages on confirmed hits —
+        it never decides whether an alert fires.
+
         Args:
             frame: Current frame data
             previous_frames: Historical frames for context
-        
+
         Returns:
             List of alerts triggered
         """
         alerts = []
-        
+
         # Add to history
         self.add_frame_to_history(frame)
-        
-        # Apply rule-based checks
+
+        # --- Primary layer: deterministic rule checks ---
         rule_alerts = self._check_rules(frame)
         alerts.extend(rule_alerts)
-        
-        # Apply LLM-enhanced contextual checks (if previous frames provided)
+
+        # --- Secondary layer: contextual pattern checks ---
         if previous_frames:
             context_alerts = self._check_context(frame, previous_frames)
             alerts.extend(context_alerts)
-        
+
+        # --- Optional: LLM enriches message text on confirmed rule hits ---
+        if alerts and self.llm_processor is not None and getattr(self.llm_processor, "llm", None) is not None:
+            for alert in alerts:
+                try:
+                    enrich_prompt = ALERT_ENRICHMENT_PROMPT.format(
+                        alert_type=alert.alert_type,
+                        location=alert.location,
+                        timestamp=alert.timestamp,
+                        description=frame.get('description', ''),
+                        objects=', '.join(frame.get('objects', [])),
+                        activity=frame.get('activity_type', '')
+                    )
+                    enriched = self.llm_processor.query_llm(enrich_prompt).strip()
+                    if enriched and len(enriched) > 10:
+                        alert.message = enriched
+                except Exception:
+                    # Keep original rule-generated message on enrichment failure
+                    pass
+
         # Store alerts
         self.alerts.extend(alerts)
-        
+
         return alerts
 
     def _check_rules(self, frame: Dict[str, Any]) -> List[Alert]:
         """
-        Rule-based alerting layer.
-        Triggers on hard conditions.
+        LLM-driven alert evaluation.
+
+        Qwen2.5 receives the frame's timestamp, location, and VLM-generated description
+        and decides whether a security alert is warranted.  The LLM is the sole
+        decision maker -- no keyword lists, no hard-coded rules.
+
+        Falls back to embedding-similarity screening only when the LLM is not loaded.
         """
         alerts = []
         timestamp = frame['timestamp']
-        location = frame['location']
-        hour = int(timestamp.split()[1].split(':')[0])
-        activity_type = frame.get('activity_type', 'unknown')
-        objects = frame.get('objects', [])
-        
-        # RULE 1: Loitering at midnight
-        if hour >= 23 or hour <= 2:  # Midnight to 2 AM
-            if activity_type == "person":
-                alert = Alert(
-                    frame_id=frame['frame_id'],
-                    alert_type="loitering_midnight",
-                    severity="HIGH",
-                    threat_score=8,
-                    message=f"Person loitering at {location} at {timestamp} (off-hours activity)",
-                    timestamp=timestamp,
-                    location=location
-                )
-                alerts.append(alert)
-        
-        # RULE 2: Suspicious perimeter activity
-        if "perimeter" in location.lower() or "fence" in location.lower():
-            if activity_type == "person":
-                alert = Alert(
-                    frame_id=frame['frame_id'],
-                    alert_type="perimeter_breach",
-                    severity="MEDIUM",
-                    threat_score=6,
-                    message=f"Person detected at {location} (perimeter security concern)",
-                    timestamp=timestamp,
-                    location=location
-                )
-                alerts.append(alert)
-        
-        # RULE 3: Unusual nighttime vehicle activity (vehicle at odd hour)
-        if hour >= 23 or hour <= 6:  # Night hours
-            if activity_type in ["vehicle", "vehicle+person"]:
-                alert = Alert(
-                    frame_id=frame['frame_id'],
-                    alert_type="night_vehicle",
-                    severity="LOW",
-                    threat_score=3,
-                    message=f"Vehicle activity at {location} during off-hours ({timestamp})",
-                    timestamp=timestamp,
-                    location=location
-                )
-                alerts.append(alert)
-        
+        location  = frame['location']
+        hour      = self._get_frame_hour(timestamp)
+        description = frame.get('description', '')
+
+        # --- Primary path: Qwen decides ---
+        if self.llm_processor is not None and getattr(self.llm_processor, "llm", None) is not None:
+            time_of_day = "night (off-hours)" if hour in (23, 0, 1, 2, 3, 4, 5, 6) else f"daytime (hour {hour})"
+
+            prompt = ALERT_DECISION_PROMPT.format(
+                time_of_day=time_of_day,
+                location=location,
+                description=description
+            )
+
+            try:
+                response = self.llm_processor.query_llm(prompt)
+                parsed = self._loads_json_object(response)
+                if parsed and isinstance(parsed, dict) and parsed.get("alert"):
+                    alerts.append(Alert(
+                        frame_id=frame['frame_id'],
+                        alert_type=parsed.get("alert_type", "suspicious_activity"),
+                        severity=parsed.get("severity", "MEDIUM"),
+                        threat_score=int(parsed.get("threat_score", 5)),
+                        message=parsed.get("message", "Suspicious activity detected"),
+                        timestamp=timestamp,
+                        location=location,
+                    ))
+            except Exception as e:
+                print(f"⚠ LLM alert evaluation failed: {e}")
+            # If LLM loaded but returned no alert (or failed) → no false positive
+            return alerts
+
+        # --- Fallback: embedding similarity (no LLM available) ---
+        if self.embed_model is not None and util is not None and description:
+            try:
+                alert_conditions = {
+                    "loitering_midnight": {
+                        "phrase": "a person is standing or loitering near a building or gate at night",
+                        "severity": self.config.loitering_severity,
+                        "threat_score": self.config.loitering_threat_score,
+                        "time_gate": lambda h: h in self.config.loitering_hours,
+                    },
+                    "perimeter_breach": {
+                        "phrase": "a person or vehicle is near a fence, gate, wall, or restricted perimeter area",
+                        "severity": self.config.perimeter_severity,
+                        "threat_score": self.config.perimeter_threat_score,
+                        "time_gate": lambda h: True,
+                    },
+                    "night_vehicle": {
+                        "phrase": "a car or truck is moving or parked near a gate or road at night",
+                        "severity": self.config.night_vehicle_severity,
+                        "threat_score": self.config.night_vehicle_threat_score,
+                        "time_gate": lambda h: h in self.config.night_vehicle_hours,
+                    },
+                }
+                desc_emb = self.embed_model.encode(description, convert_to_tensor=True)
+                for alert_type, cond in alert_conditions.items():
+                    if not cond["time_gate"](hour):
+                        continue
+                    cond_emb = self.embed_model.encode(cond["phrase"], convert_to_tensor=True)
+                    similarity = float(util.cos_sim(desc_emb, cond_emb)[0][0])
+                    if similarity > 0.50:
+                        alerts.append(Alert(
+                            frame_id=frame['frame_id'],
+                            alert_type=alert_type,
+                            severity=cond["severity"],
+                            threat_score=cond["threat_score"],
+                            message=f"{alert_type.replace('_', ' ').title()} detected at {location} [similarity: {similarity:.2f}]",
+                            timestamp=timestamp,
+                            location=location,
+                        ))
+            except Exception as e:
+                print(f"⚠ Embedding fallback failed: {e}")
+
         return alerts
 
+
+
     def _check_context(self, frame: Dict[str, Any], previous_frames: List[Dict[str, Any]]) -> List[Alert]:
+
         """
         LLM-enhanced contextual alerting.
         Detects patterns and anomalies in frame history.
@@ -130,15 +259,15 @@ class AlertEngine:
         location = frame['location']
         objects = frame.get('objects', [])
         
-        # PATTERN 1: Repeat vehicle visits
+        # PATTERN 1: Repeat vehicle/object visits
         vehicle_visits = self._find_repeat_vehicle_visits(frame, previous_frames)
         if vehicle_visits:
             for vehicle_info in vehicle_visits:
                 alert = Alert(
                     frame_id=frame['frame_id'],
                     alert_type="repeat_visit",
-                    severity="MEDIUM",
-                    threat_score=5,
+                    severity=self.config.repeat_visit_severity,
+                    threat_score=self.config.repeat_visit_threat_score,
                     message=f"Repeat visit: {vehicle_info['vehicle']} entered at {vehicle_info['first_time']} and {timestamp}",
                     timestamp=timestamp,
                     location=location
@@ -157,31 +286,31 @@ class AlertEngine:
         previous_frames: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """
-        Detect if a vehicle has visited multiple times.
+        Detect if a vehicle or person has visited multiple times.
         
-        Returns list of repeat vehicle info.
+        Returns list of repeat visit info.
         """
         repeats = []
         current_objects = current_frame.get('objects', [])
         
-        # Look for common vehicle identifiers
+        # Look for common vehicle or person identifiers
         vehicle_keywords = {
             'truck', 'ford', 'f150', 'sedan', 'car', 'vehicle', 'blue',
-            'silver', 'delivery', 'pickup'
+            'silver', 'delivery', 'pickup', 'person', 'unknown person', 'employee'
         }
         
-        current_vehicles = [obj for obj in current_objects if obj.lower() in vehicle_keywords]
+        current_vehicles = [obj for obj in current_objects if any(k in obj.lower() for k in vehicle_keywords)]
         
         if not current_vehicles:
             return repeats
         
-        # Check if same vehicle appeared in previous frames
+        # Check if same vehicle/person appeared in previous frames
         for vehicle in current_vehicles:
             previous_visits = []
             for prev_frame in previous_frames:
                 prev_objects = prev_frame.get('objects', [])
-                # Look for vehicle name in previous frames
-                if any(vehicle.lower() in str(obj).lower() for obj in prev_objects):
+                # Look for vehicle/person name in previous frames
+                if any(vehicle.lower() in str(obj).lower() or str(obj).lower() in vehicle.lower() for obj in prev_objects):
                     previous_visits.append({
                         'time': prev_frame['timestamp'],
                         'location': prev_frame['location']
@@ -213,18 +342,17 @@ class AlertEngine:
         # Find frames with same object at same location
         same_location_frames = [f for f in previous_frames if f['location'] == location]
         
-        if len(same_location_frames) >= 3:  # 3+ frames at same location
+        if len(same_location_frames) >= self.config.dwell_time_min_frames:
             time_span = self._calculate_time_span(same_location_frames)
             
-            # If object stayed >4 hours, flag as long dwell
-            if time_span > 240:  # 4 hours in minutes
+            if time_span > self.config.dwell_time_min_minutes:
                 # Extract object name
                 object_name = ", ".join(objects) if objects else "object"
                 alert = Alert(
                     frame_id=current_frame['frame_id'],
                     alert_type="long_dwell",
-                    severity="LOW",
-                    threat_score=4,
+                    severity=self.config.dwell_time_severity,
+                    threat_score=self.config.dwell_time_threat_score,
                     message=f"{object_name} has been stationary at {location} for {time_span//60}+ hours",
                     timestamp=timestamp,
                     location=location

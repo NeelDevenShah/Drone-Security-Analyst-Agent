@@ -1,0 +1,71 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Build artifacts
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Temp files
+*.tmp
+tmp/
+scratch/
+
+# Data (keep directory structure, ignore large/generated files)
+data/frames.db
+data/frames_live.db
+data/chroma_db/
+data/frames/
+data/embeddings/
+
+# Reports (keep directory structure)
+reports/*.pdf
+reports/*.docx
+
+# Video files
+*.mpg
+*.mpeg
+*.mp4
+*.avi

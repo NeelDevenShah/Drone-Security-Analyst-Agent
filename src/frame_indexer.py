@@ -4,9 +4,14 @@ Hybrid approach: SQLite for metadata + ChromaDB for semantic embeddings
 """
 import sqlite3
 import json
+import threading
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
+
+import chromadb
+from sentence_transformers import SentenceTransformer
+from config import DATABASE_CONFIG
 
 
 class FrameIndexer:
@@ -18,64 +23,81 @@ class FrameIndexer:
     - ChromaDB: Semantic embeddings for similarity search (optional enhancement)
     """
 
-    def __init__(self, db_path: str = "/home/neel/Desktop/flytbaseAI/data/frames.db"):
+    def __init__(self, db_path: str = DATABASE_CONFIG.db_path):
         """Initialize the frame indexing database"""
         self.db_path = db_path
         self.conn = None
-        self.cursor = None
+        self.db_lock = threading.RLock()
         self._initialize_database()
+        
+        # ChromaDB & SentenceTransformer initialization
+        self.chroma_client = None
+        self.chroma_collection = None
+        self.embed_model = None
+        
+        try:
+            persist_dir = str(Path(self.db_path).parent / "chroma_db")
+            self.chroma_client = chromadb.PersistentClient(path=persist_dir)
+            self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+            self.chroma_collection = self.chroma_client.get_or_create_collection("drone_frames")
+            print("✓ Initialized ChromaDB & SentenceTransformer for FrameIndexer")
+        except Exception as e:
+            print(f"⚠ Failed to initialize ChromaDB/SentenceTransformer: {e}")
 
     def _initialize_database(self):
         """Create SQLite tables for frame storage"""
-        self.conn = sqlite3.connect(self.db_path)
-        self.cursor = self.conn.cursor()
-        
-        # Create frames table with metadata
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS frames (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                frame_id INTEGER UNIQUE NOT NULL,
-                timestamp TEXT NOT NULL,
-                location TEXT NOT NULL,
-                description TEXT NOT NULL,
-                objects TEXT NOT NULL,
-                activity_type TEXT NOT NULL,
-                threat_score INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                telemetry TEXT
-            )
-        ''')
-        
-        # Create alerts table
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS alerts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                frame_id INTEGER NOT NULL,
-                alert_type TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                threat_score INTEGER NOT NULL,
-                message TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (frame_id) REFERENCES frames(frame_id)
-            )
-        ''')
-        
-        # Create index on timestamp for efficient temporal queries
-        self.cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_timestamp ON frames(timestamp)
-        ''')
-        
-        # Create index on location for location queries
-        self.cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_location ON frames(location)
-        ''')
-        
-        # Create index on activity_type for activity queries
-        self.cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_activity_type ON frames(activity_type)
-        ''')
-        
-        self.conn.commit()
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+
+        with self.db_lock:
+            cursor = self.conn.cursor()
+
+            # Create frames table with metadata
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS frames (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    frame_id INTEGER UNIQUE NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    location TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    objects TEXT NOT NULL,
+                    activity_type TEXT NOT NULL,
+                    threat_score INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    telemetry TEXT
+                )
+            ''')
+
+            # Create alerts table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    frame_id INTEGER NOT NULL,
+                    alert_type TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    threat_score INTEGER NOT NULL,
+                    message TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (frame_id) REFERENCES frames(frame_id)
+                )
+            ''')
+
+            # Create index on timestamp for efficient temporal queries
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_timestamp ON frames(timestamp)
+            ''')
+
+            # Create index on location for location queries
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_location ON frames(location)
+            ''')
+
+            # Create index on activity_type for activity queries
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_activity_type ON frames(activity_type)
+            ''')
+
+            self.conn.commit()
         print(f"✓ Initialized database at {self.db_path}")
 
     def store_frame(
@@ -107,15 +129,42 @@ class FrameIndexer:
         """
         objects_json = json.dumps(objects)
         telemetry_json = json.dumps(telemetry) if telemetry else None
-        
-        self.cursor.execute('''
-            INSERT OR REPLACE INTO frames 
-            (frame_id, timestamp, location, description, objects, activity_type, threat_score, telemetry)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (frame_id, timestamp, location, description, objects_json, activity_type, threat_score, telemetry_json))
-        
-        self.conn.commit()
-        return self.cursor.lastrowid
+
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO frames 
+                (frame_id, timestamp, location, description, objects, activity_type, threat_score, telemetry)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (frame_id, timestamp, location, description, objects_json, activity_type, threat_score, telemetry_json))
+
+            self.conn.commit()
+            last_id = cursor.lastrowid
+
+        # Index in ChromaDB if enabled
+        if self.chroma_collection is not None and self.embed_model is not None:
+            try:
+                doc_str = f"Location: {location}. Description: {description}. Objects: {', '.join(objects)}. Activity: {activity_type}."
+                embedding = self.embed_model.encode(doc_str).tolist()
+                
+                metadata = {
+                    "frame_id": frame_id,
+                    "timestamp": timestamp,
+                    "location": location,
+                    "activity_type": activity_type,
+                    "threat_score": threat_score
+                }
+                
+                self.chroma_collection.upsert(
+                    ids=[str(frame_id)],
+                    embeddings=[embedding],
+                    metadatas=[metadata],
+                    documents=[doc_str]
+                )
+            except Exception as e:
+                print(f"⚠ Failed to store embedding in ChromaDB: {e}")
+
+        return last_id
 
     def store_alert(
         self,
@@ -138,13 +187,15 @@ class FrameIndexer:
         Returns:
             Database ID of inserted alert
         """
-        self.cursor.execute('''
-            INSERT INTO alerts (frame_id, alert_type, severity, threat_score, message)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (frame_id, alert_type, severity, threat_score, message))
-        
-        self.conn.commit()
-        return self.cursor.lastrowid
+        with self.db_lock:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT INTO alerts (frame_id, alert_type, severity, threat_score, message)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (frame_id, alert_type, severity, threat_score, message))
+
+            self.conn.commit()
+            return cursor.lastrowid
 
     def query_by_timestamp_range(
         self,
@@ -161,13 +212,14 @@ class FrameIndexer:
         Returns:
             List of matching frames
         """
-        self.cursor.execute('''
-            SELECT * FROM frames 
-            WHERE timestamp BETWEEN ? AND ?
-            ORDER BY timestamp
-        ''', (start_time, end_time))
-        
-        return self._fetch_as_dicts()
+        with self.db_lock:
+            cursor = self.conn.execute('''
+                SELECT * FROM frames 
+                WHERE timestamp BETWEEN ? AND ?
+                ORDER BY timestamp
+            ''', (start_time, end_time))
+
+            return self._fetch_as_dicts(cursor)
 
     def query_by_location(self, location: str) -> List[Dict[str, Any]]:
         """
@@ -179,13 +231,14 @@ class FrameIndexer:
         Returns:
             List of frames at that location
         """
-        self.cursor.execute('''
-            SELECT * FROM frames 
-            WHERE location = ?
-            ORDER BY timestamp
-        ''', (location,))
-        
-        return self._fetch_as_dicts()
+        with self.db_lock:
+            cursor = self.conn.execute('''
+                SELECT * FROM frames 
+                WHERE location = ?
+                ORDER BY timestamp
+            ''', (location,))
+
+            return self._fetch_as_dicts(cursor)
 
     def query_by_activity_type(self, activity_type: str) -> List[Dict[str, Any]]:
         """
@@ -197,13 +250,14 @@ class FrameIndexer:
         Returns:
             List of matching frames
         """
-        self.cursor.execute('''
-            SELECT * FROM frames 
-            WHERE activity_type = ?
-            ORDER BY timestamp
-        ''', (activity_type,))
-        
-        return self._fetch_as_dicts()
+        with self.db_lock:
+            cursor = self.conn.execute('''
+                SELECT * FROM frames 
+                WHERE activity_type = ?
+                ORDER BY timestamp
+            ''', (activity_type,))
+
+            return self._fetch_as_dicts(cursor)
 
     def query_by_object(self, object_keyword: str) -> List[Dict[str, Any]]:
         """
@@ -216,59 +270,103 @@ class FrameIndexer:
             List of frames containing that object
         """
         # Since objects are stored as JSON, we need to search within the JSON
-        self.cursor.execute('''
-            SELECT * FROM frames 
-            WHERE objects LIKE ?
-            ORDER BY timestamp
-        ''', (f'%{object_keyword}%',))
-        
-        return self._fetch_as_dicts()
+        with self.db_lock:
+            cursor = self.conn.execute('''
+                SELECT * FROM frames 
+                WHERE objects LIKE ?
+                ORDER BY timestamp
+            ''', (f'%{object_keyword}%',))
+
+            return self._fetch_as_dicts(cursor)
+
+    def query_by_semantic_similarity(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        Perform semantic similarity search using ChromaDB.
+        """
+        if self.chroma_collection is None or self.embed_model is None:
+            return []
+            
+        try:
+            query_embedding = self.embed_model.encode(query).tolist()
+            results = self.chroma_collection.query(
+                query_embeddings=[query_embedding],
+                n_results=limit
+            )
+            
+            frame_ids = []
+            if results and 'metadatas' in results and results['metadatas']:
+                for meta_list in results['metadatas']:
+                    for meta in meta_list:
+                        if 'frame_id' in meta:
+                            frame_ids.append(meta['frame_id'])
+            
+            if not frame_ids:
+                return []
+                
+            placeholders = ",".join("?" for _ in frame_ids)
+            with self.db_lock:
+                cursor = self.conn.execute(
+                    f"SELECT * FROM frames WHERE frame_id IN ({placeholders})",
+                    frame_ids
+                )
+                frames = self._fetch_as_dicts(cursor)
+                
+                frames_map = {f['frame_id']: f for f in frames}
+                sorted_frames = [frames_map[fid] for fid in frame_ids if fid in frames_map]
+                return sorted_frames
+        except Exception as e:
+            print(f"⚠ Semantic similarity query failed: {e}")
+            return []
 
     def get_all_alerts(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get all alerts, most recent first"""
-        self.cursor.execute('''
-            SELECT a.*, f.timestamp, f.location, f.description 
-            FROM alerts a
-            JOIN frames f ON a.frame_id = f.frame_id
-            ORDER BY a.created_at DESC
-            LIMIT ?
-        ''', (limit,))
-        
-        return self._fetch_as_dicts()
+        with self.db_lock:
+            cursor = self.conn.execute('''
+                SELECT a.*, f.timestamp, f.location, f.description 
+                FROM alerts a
+                JOIN frames f ON a.frame_id = f.frame_id
+                ORDER BY a.created_at DESC
+                LIMIT ?
+            ''', (limit,))
+
+            return self._fetch_as_dicts(cursor)
 
     def get_alerts_by_severity(self, severity: str) -> List[Dict[str, Any]]:
         """Get alerts filtered by severity"""
-        self.cursor.execute('''
-            SELECT a.*, f.timestamp, f.location, f.description 
-            FROM alerts a
-            JOIN frames f ON a.frame_id = f.frame_id
-            WHERE a.severity = ?
-            ORDER BY a.created_at DESC
-        ''', (severity,))
-        
-        return self._fetch_as_dicts()
+        with self.db_lock:
+            cursor = self.conn.execute('''
+                SELECT a.*, f.timestamp, f.location, f.description 
+                FROM alerts a
+                JOIN frames f ON a.frame_id = f.frame_id
+                WHERE a.severity = ?
+                ORDER BY a.created_at DESC
+            ''', (severity,))
+
+            return self._fetch_as_dicts(cursor)
 
     def get_frame_count(self) -> int:
         """Get total number of stored frames"""
-        self.cursor.execute('SELECT COUNT(*) FROM frames')
-        return self.cursor.fetchone()[0]
+        with self.db_lock:
+            cursor = self.conn.execute('SELECT COUNT(*) FROM frames')
+            return cursor.fetchone()[0]
 
     def get_alert_count(self) -> int:
         """Get total number of alerts"""
-        self.cursor.execute('SELECT COUNT(*) FROM alerts')
-        return self.cursor.fetchone()[0]
+        with self.db_lock:
+            cursor = self.conn.execute('SELECT COUNT(*) FROM alerts')
+            return cursor.fetchone()[0]
 
     def get_frames_for_shift_summary(self) -> List[Dict[str, Any]]:
         """Get all frames for generating shift summary"""
-        self.cursor.execute('SELECT * FROM frames ORDER BY timestamp')
-        return self._fetch_as_dicts()
+        with self.db_lock:
+            cursor = self.conn.execute('SELECT * FROM frames ORDER BY timestamp')
+            return self._fetch_as_dicts(cursor)
 
-    def _fetch_as_dicts(self) -> List[Dict[str, Any]]:
+    def _fetch_as_dicts(self, cursor) -> List[Dict[str, Any]]:
         """Convert cursor results to list of dicts with column names"""
-        columns = [description[0] for description in self.cursor.description]
         results = []
-        for row in self.cursor.fetchall():
-            result = dict(zip(columns, row))
+        for row in cursor.fetchall():
+            result = dict(row)
             # Parse JSON fields
             if 'objects' in result and isinstance(result['objects'], str):
                 result['objects'] = json.loads(result['objects'])
@@ -277,11 +375,32 @@ class FrameIndexer:
             results.append(result)
         return results
 
+    def clear_all(self):
+        """
+        Wipe all frames and alerts from the database.
+        Called before importing a new results.json so stale/simulated data
+        from previous runs doesn't bleed through.
+        """
+        with self.db_lock:
+            self.conn.execute("DELETE FROM alerts")
+            self.conn.execute("DELETE FROM frames")
+            self.conn.commit()
+        # Also clear ChromaDB collection so semantic search is fresh
+        if self.chroma_collection is not None:
+            try:
+                self.chroma_client.delete_collection("drone_frames")
+                self.chroma_collection = self.chroma_client.get_or_create_collection("drone_frames")
+            except Exception as e:
+                print(f"⚠ Could not reset ChromaDB collection: {e}")
+        print("✓ Cleared all frames and alerts from database")
+
     def close(self):
         """Close database connection"""
-        if self.conn:
-            self.conn.close()
-            print("✓ Database connection closed")
+        with self.db_lock:
+            if self.conn:
+                self.conn.close()
+                self.conn = None
+                print("✓ Database connection closed")
 
     def __enter__(self):
         return self
